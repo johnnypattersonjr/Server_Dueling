@@ -1,0 +1,17 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: Server_Dueling
+Upstream-Contact: Johnny Patterson <johnny.patterson.jr@gmail.com>
+Source: https://github.com/johnnypattersonjr/Server_Dueling
+
+Files:
+	.gitignore
+	description.txt
+	README.md
+Copyright: Copyright (c) Johnny Patterson
+License: CC0-1.0
+
+Files:
+	scripts/*
+	server.cs
+Copyright: Copyright (c) Johnny Patterson
+License: GPL-3.0-or-later
