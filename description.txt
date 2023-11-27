@@ -1,0 +1,3 @@
+Title: Dueling Server
+Author: Johnny Patterson
+Server scripts for the Dueling game mode.
