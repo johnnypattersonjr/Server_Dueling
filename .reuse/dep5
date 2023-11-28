@@ -4,6 +4,7 @@ Upstream-Contact: Johnny Patterson <johnny.patterson.jr@gmail.com>
 Source: https://github.com/johnnypattersonjr/Server_Dueling
 
 Files:
+	.gitattributes
 	.gitignore
 	description.txt
 	README.md

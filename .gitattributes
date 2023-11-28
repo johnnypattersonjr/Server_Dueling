@@ -1,0 +1,7 @@
+# Copyright (c) Johnny Patterson
+
+* text=auto
+*.cs text eol=crlf
+*.txt text eol=crlf
+
+*.cs linguist-langauge=TorqueScript
