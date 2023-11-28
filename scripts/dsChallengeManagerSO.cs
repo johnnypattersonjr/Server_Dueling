@@ -137,7 +137,7 @@ function dsChallengeManagerSO::cancelChallenge(%this, %client)
 
 function dsChallengeManagerSO::startDuel(%this, %duelist1, %duelist2, %weapon, %goal, %practice)
 {
-	%partition = dsWorldPartitionManagerSO.allocate();
+	%partition = dsWorldPartitionManagerSO.acquire();
 	if (!isObject(%partition))
 	{
 		return -1;

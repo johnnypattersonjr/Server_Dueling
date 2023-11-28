@@ -88,6 +88,12 @@ function serverCmddcChallenge(%client, %target, %weaponName, %goal)
 
 function serverCmddcClearBricks(%client)
 {
+	%miniGame = %client.minigame;
+	if (!isObject(%miniGame) || !%miniGame.buildSession || %miniGame.owner != %client)
+		return;
+
+	if (%miniGame.partition.clearBricks())
+		%miniGame.chatMessageAll(0, "\c4" @ %client.name @ " cleared the brick!");
 }
 
 function serverCmddcDecline(%client, %source)
@@ -236,7 +242,7 @@ function serverCmddcStartBuilding(%client)
 		return false;
 	}
 
-	%partition = dsWorldPartitionManagerSO.allocate();
+	%partition = dsWorldPartitionManagerSO.acquire();
 	if (!isObject(%partition))
 	{
 		commandToClient(%client, 'MessageBoxOK', 'Dueling Error', 'Could not allocate world partition.');
@@ -352,7 +358,7 @@ function serverCmdRemoveFromMiniGame(%client, %target)
 	Parent::serverCmdRemoveFromMiniGame(%client, %target);
 }
 
-function serverCmdAcceptMiniGameInvite(%client, %miniGame)
+function serverCmdAcceptMiniGameInvite(%client, %miniGameInvite)
 {
 	// Duelists cannot accept invites when in a duel.
 
@@ -360,7 +366,7 @@ function serverCmdAcceptMiniGameInvite(%client, %miniGame)
 	if (isObject(%miniGame) && %miniGame.duel && !%miniGame.testDuel && (%miniGame.duelist1 == %client || %miniGame.duelist2 == %client))
 		return;
 
-	Parent::serverCmdAcceptMiniGameInvite(%client, %miniGame);
+	Parent::serverCmdAcceptMiniGameInvite(%client, %miniGameInvite);
 }
 
 function serverCmdInviteToMiniGame(%client, %target)
@@ -423,7 +429,19 @@ function GameConnection::spawnPlayer(%this)
 	// Allow for spawn killing.
 	%player = %this.player;
 	if (isObject(%player))
+	{
 		%player.spawnTime = "";
+
+		if (isObject(%miniGame) && %miniGame.duel)
+		{
+			%player.scopeToClient(%miniGame.duelist1);
+			%player.scopeToClient(%miniGame.duelist2);
+		}
+		else
+		{
+			%player.scopeToClient(%this);
+		}
+	}
 
 	return %this;
 }

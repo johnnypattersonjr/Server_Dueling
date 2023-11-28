@@ -38,9 +38,9 @@ function dsWeaponManagerSO::buildListFromDatablockGroup(%this)
 	{
 		%list.sort(0, 1);
 
-		%weapons = %list.getRowID(0);
+		%weapons = %list.getRowId(0);
 		for (%i = 1; %i < %count; %i++)
-			%weapons = %weapons TAB %list.getRowID(%i);
+			%weapons = %weapons TAB %list.getRowId(%i);
 		%this.list = %weapons;
 
 		%weapons = 0 SPC %list.getRowText(0);

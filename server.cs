@@ -60,7 +60,7 @@ function dsCreateGhostingSky()
 		// position = "100000 100000 100000";
 		position = "0 0 0";
 		scale = "0 0 0";
-		// visibleDistance = 0; // Has internal minimum of 50.
+		visibleDistance = 0; // Has internal minimum of 50.
 	};
 
 	// Skies will be force named "Sky" on create, so names must be set after.
@@ -82,13 +82,21 @@ function dsSetGhostingDistance(%distance)
 
 function startGame()
 {
+	%boundarySize = 64;
+	%arenaSize = 256;
+	%partitionSize = %arenaSize + %boundarySize;
+	%partitionSeparation = %partitionSize * 2;
+
 	DisabledDataBlockGroup();
 
 	dsChallengeManagerSO();
 	dsCreateGhostingSky();
 	dsStatManagerSO();
 	dsWeaponManagerSO().buildListFromDatablockGroup();
-	dsWorldPartitionManagerSO();
+
+	dsSetGhostingDistance(%partitionSize);
+	Sky.visibleDistance = %partitionSize * 2;
+	dsWorldPartitionManagerSO().generate(%partitionSeparation, %partitionSize, 256);
 
 	dsLegacyDataServer($Server::Port + 7);
 	Parent::startGame();
