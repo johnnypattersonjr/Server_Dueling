@@ -38,23 +38,16 @@ function dsWorldPartitionManagerSO::generate(%this, %partitionSeparation, %parti
 	%pos = "0 0 0";
 	%walk = "1 0 0";
 
-	// Start at index 1
-	%pos = VectorAdd(%pos, %walk);
-	%pos = mFloatLength(getWord(%pos, 0), 0) SPC mFloatLength(getWord(%pos, 1), 0) SPC mFloatLength(getWord(%pos, 2), 0);
-	%l = 1;
-	%edge = 1;
-	%walk = MatrixMulVector(%turn, %walk);
-
 	%missionCleanup = nameToID(MissionCleanup);
 	%freePartitions = %this.freePartitions;
 
 	// Spiral generation
 	// TODO: Use the Z axis
-	for (%i = 1; %i <= %count; %i++)
+	for (%i = 0; %i < %count; %i++)
 	{
-		%pos = VectorAdd(%pos, %walk);
-		%pos = mFloatLength(getWord(%pos, 0), 0) SPC mFloatLength(getWord(%pos, 1), 0) SPC mFloatLength(getWord(%pos, 2), 0);
 		%scaledPos = VectorScale(%pos, %partitionSeparation);
+		%pos = VectorAdd(%pos, %walk);
+		%pos = mFloatLength(getWord(%pos, 0) + 1e-9, 0) SPC mFloatLength(getWord(%pos, 1) + 1e-9, 0) SPC mFloatLength(getWord(%pos, 2) + 1e-9, 0);
 
 		%x = getWord(%scaledPos, 0);
 		%y = getWord(%scaledPos, 1);
@@ -100,6 +93,12 @@ function dsWorldPartitionManagerSO::generate(%this, %partitionSeparation, %parti
 			}
 		}
 	}
+
+	// Always keep the center partition's boundary loaded
+	%centerPartition = %freePartitions.getObject(0);
+	%this.centerPartition = %centerPartition;
+	%centerPartition.createBoundary();
+	%missionCleanup.add(%centerPartition);
 }
 
 function dsWorldPartitionManagerSO::acquire(%this)
@@ -121,8 +120,8 @@ function dsWorldPartitionManagerSO::acquire(%this)
 function dsWorldPartitionManagerSO::lookupPartition(%this, %position)
 {
 	%partitionSeparation = %this.partitionSeparation;
-	%x = mFloatLength(mFloatLength(getWord(%position, 0) / %partitionSeparation, 0) * %partitionSeparation, 0);
-	%y = mFloatLength(mFloatLength(getWord(%position, 1) / %partitionSeparation, 0) * %partitionSeparation, 0);
+	%x = mFloatLength(mFloatLength(getWord(%position, 0) / %partitionSeparation, 0) * %partitionSeparation + 1e-9, 0);
+	%y = mFloatLength(mFloatLength(getWord(%position, 1) / %partitionSeparation, 0) * %partitionSeparation + 1e-9, 0);
 	%z = 0;
 
 	%partitionPositionTable = %this.partitionPositionTable;
@@ -158,6 +157,7 @@ function dsWorldPartitionSO::hostBuildingSession(%this, %client)
 	%miniGame.EnableBuilding = 1;
 	%miniGame.EnablePainting = 1;
 	%miniGame.EnableWand = 1;
+	%miniGame.FallingDamage = 0;
 	%miniGame.SelfDamage = 1;
 	%miniGame.StartEquip0 = nameToID(HammerItem);
 	%miniGame.StartEquip1 = nameToID(WrenchItem);
@@ -177,6 +177,8 @@ function dsWorldPartitionSO::hostBuildingSession(%this, %client)
 	commandToClient(%client, 'dcSetBrickCount', 0, %this.maxBricks);
 
 	commandToAll('AddMiniGameLine', %miniGame.getLine(), %miniGame, %colorIdx);
+
+	dsChallengeManagerSO.broadcastPlayerUpdate(%client, 2, %client);
 
 	%miniGame.Reset(%client);
 
@@ -240,6 +242,9 @@ function dsWorldPartitionSO::hostDuelingSession(%this, %duelist1, %duelist2, %we
 	%miniGame.commandToAll('SetPaintingDisabled', 1);
 
 	commandToAll('AddMiniGameLine', %miniGame.getLine(), %miniGame, %colorIdx);
+
+	dsChallengeManagerSO.broadcastPlayerUpdate(%duelist1, 4, %duelist1);
+	dsChallengeManagerSO.broadcastPlayerUpdate(%duelist2, 4, %duelist2);
 
 	%miniGame.Reset(%duelist1);
 
@@ -427,7 +432,7 @@ function dsWorldPartitionSO::ghostBoundaryToClient(%this, %client)
 		%boundary.getObject(%i).scopeToClient(%client);
 }
 
-function dsWorldPartitionSO::testWorldBox(%this, %worldBox)
+function dsWorldPartitionSO::worldBoxCollide(%this, %worldBox)
 {
 	%minX = getWord(%worldBox, 0);
 	%minY = getWord(%worldBox, 1);
@@ -437,6 +442,18 @@ function dsWorldPartitionSO::testWorldBox(%this, %worldBox)
 	%maxZ = getWord(%worldBox, 5);
 
 	return %minX < %this.maxX && %minY < %this.maxY && %minZ < %this.maxZ && %maxX > %this.minX && %maxY > %this.minY && %maxZ > %this.minZ;
+}
+
+function dsWorldPartitionSO::worldBoxInside(%this, %worldBox)
+{
+	%minX = getWord(%worldBox, 0);
+	%minY = getWord(%worldBox, 1);
+	%minZ = getWord(%worldBox, 2);
+	%maxX = getWord(%worldBox, 3);
+	%maxY = getWord(%worldBox, 4);
+	%maxZ = getWord(%worldBox, 5);
+
+	return %maxX <= %this.maxX && %maxY <= %this.maxY && %maxZ <= %this.maxZ && %minX >= %this.minX && %minY >= %this.minY && %minZ >= %this.minZ;
 }
 
 function dsWorldPartitionSO::clearBricks(%this)
@@ -460,7 +477,6 @@ function MiniGameSO::addMember(%this, %client)
 	%camera = %client.camera;
 	%player = %client.player;
 
-	%client.suppressGhostAlwaysObjectsReceived = 1;
 	%client.activateGhosting();
 
 	if (isObject(%camera))
@@ -483,7 +499,8 @@ function MiniGameSO::addMember(%this, %client)
 	// Will always be false for the owner when using CreateMinigameSO.
 	if (%this.buildSession)
 	{
-		%this.commandToAll('dcSetBuildSessionMember', %client, %client.name);
+		if (!%this.owner.isAIControlled())
+			commandToClient(%this.owner, 'dcSetBuildSessionMember', %client, %client.name);
 
 		if (!%client.isAIControlled())
 		{
@@ -493,12 +510,10 @@ function MiniGameSO::addMember(%this, %client)
 	}
 	else if (%this.duel)
 	{
-		if (!%client.isAIControlled())
-			commandToClient(%client, 'dcSetDueling', 1);
-
 		if (%this.duelist1 != %client && %this.duelist2 != %client)
 		{
 			// Trigger spectator mode on player spawn attempt.
+			dsChallengeManagerSO.broadcastPlayerUpdate(%client, 5, %client);
 			%client.InstantRespawn();
 		}
 	}
@@ -669,7 +684,14 @@ function MiniGameSO::endGame(%this)
 	}
 	else if (%this.duel)
 	{
-		%this.commandToAll('dcSetDueling', 0);
+		%duelist1 = %this.duelist1;
+		%duelist2 = %this.duelist2;
+
+		if (isObject(%duelist1) && !%duelist1.isAIControlled())
+			commandToClient(%duelist1, 'dcSetDueling', 0);
+
+		if (isObject(%duelist2) && !%duelist2.isAIControlled())
+			commandToClient(%duelist2, 'dcSetDueling', 0);
 	}
 
 	%numMembers = %this.numMembers;
@@ -690,9 +712,9 @@ function MiniGameSO::endGame(%this)
 		%camera = %member.camera;
 		%player = %member.player;
 
-		%member.suppressGhostAlwaysObjectsReceived = 1;
 		%member.activateGhosting();
-		%member.partition = "";
+		%member.partition = dsWorldPartitionManagerSO.centerPartition;
+		dsChallengeManagerSO.broadcastPlayerUpdate(%member, %member.dcClient ? 1 : 0, %member);
 
 		if (isObject(%camera))
 			%camera.scopeToClient(%member);
@@ -721,13 +743,12 @@ function MiniGameSO::removeMember(%this, %client)
 			%this.commandToAllExcept(%client, 'dcRemoveBuildSessionMember', %client);
 		}
 	}
-	else if (%this.duel && !%client.isAIControlled())
-	{
-		commandToClient(%client, 'dcSetDueling', 0);
-	}
 
 	if (%this.duel && (%this.duelist1 == %client || %this.duelist2 == %client))
 	{
+		if (!%client.isAIControlled())
+			commandToClient(%client, 'dcSetDueling', 0);
+
 		if (%this.checkResults(%client))
 			%this.callResults(%client);
 
@@ -739,12 +760,11 @@ function MiniGameSO::removeMember(%this, %client)
 
 	Parent::removeMember(%this, %client);
 
-	%client.partition = "";
+	%client.partition = dsWorldPartitionManagerSO.centerPartition;
 
 	%camera = %client.camera;
 	%player = %client.player;
 
-	%client.suppressGhostAlwaysObjectsReceived = 1;
 	%client.activateGhosting();
 
 	if (isObject(%camera))
@@ -985,9 +1005,9 @@ function GameConnection::setLoadingIndicator(%this, %a)
 
 function GameConnection::onGhostAlwaysObjectsReceived(%this)
 {
-	if (%this.suppressGhostAlwaysObjectsReceived)
+	if (%this.hasSpawnedOnce)
 	{
-		%this.suppressGhostAlwaysObjectsReceived = "";
+		// This is necessary to prevent resetting the client state after a call to GameConnection::activateGhosting.
 		return;
 	}
 
@@ -1077,11 +1097,15 @@ function fxDTSBrick::plant(%this)
 		if (!%this.isBoundary && (!isObject(%group) || %group != nameToID(BrickGroup_888888)) && (%partition = dsWorldPartitionManagerSO.lookupPartition(%this.position)))
 		{
 			%client = %this.client;
-			if ((isObject(%client) && %client.partition != %partition) || !%partition.testWorldBox(%this.getWorldBox()))
-				return 3;
+
+			if ((isObject(%client) && isObject(%client.partition) && %client.partition != %partition) || !%partition.worldBoxInside(%this.getWorldBox()))
+			{
+				%partition.plantErrorTooFar = 1;
+				return 6;
+			}
 
 			if (!%partition.addBrick(%this))
-				return 3;
+				return 6;
 		}
 
 		%this.isBaseplate = 1;
@@ -1101,3 +1125,26 @@ function fxDTSBrick::onRemove(%this)
 }
 
 }; // package Server_Dueling
+
+package Server_Dueling_Deferred {
+
+function serverCmdPlantBrick(%client)
+{
+	%partition = %client.partition;
+
+	if (%partition && %partition.bricks.getCount() >= %partition.maxBricks)
+	{
+		messageClient(%client, 'MsgPlantError_Limit');
+		return;
+	}
+
+	Parent::serverCmdPlantBrick(%client);
+
+	if (%partition && %partition.plantErrorTooFar)
+	{
+		%partition.plantErrorTooFar = "";
+		messageClient(%client, 'MsgPlantError_TooFar');
+	}
+}
+
+}; // package Server_Dueling_Deferred

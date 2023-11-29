@@ -82,6 +82,8 @@ function dsSetGhostingDistance(%distance)
 
 function startGame()
 {
+	activatePackage(Server_Dueling_Deferred);
+
 	%boundarySize = 64;
 	%arenaSize = 256;
 	%partitionSize = %arenaSize + %boundarySize;

@@ -96,6 +96,11 @@ function serverCmddcClearBricks(%client)
 		%miniGame.chatMessageAll(0, "\c4" @ %client.name @ " cleared the brick!");
 }
 
+function serverCmddcCloseDuelPane(%client)
+{
+	dsChallengeManagerSO.duelPaneList.remove(%client);
+}
+
 function serverCmddcDecline(%client, %source)
 {
 	if (!isObject(%client.challengeList))
@@ -134,6 +139,43 @@ function serverCmddcMapRating(%client, %good)
 {
 }
 
+function serverCmddcOpenDuelPane(%client)
+{
+	%group = nameToID(ClientGroup);
+	%count = %group.getCount();
+	for (%i = 0; %i < %count; %i++)
+	{
+		%obj = %group.getObject(%i);
+		if (%obj == %client)
+			continue;
+
+		%status = %obj.dcClient ? 1 : 0;
+		%miniGame = %obj.miniGame;
+
+		if (isObject(%miniGame))
+		{
+			if (%miniGame.buildSession)
+				%status = 2; // Building
+			else if (%obj == %miniGame.duelist1 || %obj == %miniGame.duelist2)
+				%status = 4; // Dueling
+			else
+				%status = 5; // Spectating
+		}
+		else if (%obj.dcClient)
+		{
+			%status = 1; // Available
+		}
+		else
+		{
+			%status = 0; // Not Challengable
+		}
+
+		commandToClient(%client, 'dcSetPlayer', %obj, %obj.name, %status);
+	}
+
+	dsChallengeManagerSO.duelPaneList.add(%client);
+}
+
 function serverCmddcOverwrite(%client)
 {
 }
@@ -141,18 +183,23 @@ function serverCmddcOverwrite(%client)
 function serverCmddcPong(%client, %version, %revision)
 {
 	%client.dcClient = 1;
-	commandToAllExcept(%client, 'dcSetPlayer', %client, %client.name, 1);
+
+	if (%version < 2 || (%version == 2 && %revision == 0))
+		dsChallengeManagerSO.duelPaneList.add(%client);
+
+	dsChallengeManagerSO.broadcastPlayerUpdate(%client, 1, %client);
 	serverCmddcRequestTransmission(%client);
 }
 
 function serverCmddcRequestTransmission(%client)
 {
-	if (isObject(%client.minigame))
+	%miniGame = %client.miniGame;
+	if (isObject(%miniGame))
 	{
-		%building = %client.miniGame.buildSession;
-		%dueling = !%building && %client.miniGame.duel;
+		%building = %miniGame.buildSession;
+		%dueling = !%building && %miniGame.duel && (%miniGame.duelist1 == %client || %miniGame.duelist2 == %client);
 
-		if (%building && %client.miniGame.owner == %client)
+		if (%building && %miniGame.owner == %client)
 			%building = 2;
 	}
 	else
@@ -165,18 +212,6 @@ function serverCmddcRequestTransmission(%client)
 	commandToClient(%client, 'dcSetDueling', %dueling);
 	commandToClient(%client, 'dcSetMode', 1);
 	commandToClient(%client, 'dcSetWeapons', dsWeaponManagerSO().list);
-
-	%group = nameToID(ClientGroup);
-	%count = %group.getCount();
-	for (%i = 0; %i < %count; %i++)
-	{
-		%obj = %group.getObject(%i);
-		if (%obj == %client)
-			continue;
-
-		%status = %obj.dcClient ? 1 : 0;
-		commandToClient(%client, 'dcSetPlayer', %obj, %obj.name, %status);
-	}
 
 	%list = dsChallengeManagerSO.boastList;
 	%count = %list.rowCount();
@@ -211,6 +246,23 @@ function serverCmddcRequestTransmission(%client)
 		%target = %client.challenging == 1 ? %client.challengeTarget.name : "";
 		commandToClient(%client, 'dcSetChallenging', 1, getField(%client.challengeInfo, 0), getField(%client.challengeInfo, 1), %client.challenging == 2 ? 0 : 1, %target);
 	}
+
+	if (%building)
+	{
+		%partition = %miniGame.partition;
+		commandToClient(%client, 'dcSetBrickCount', %partition.bricks.getCount(), %partition.maxBricks);
+	}
+
+	if (%building == 2)
+	{
+		%count = %miniGame.numMembers;
+
+		for (%i = 0; %i < %count; %i++)
+		{
+			%member = %miniGame.member[%i];
+			commandToClient(%client, 'dcSetBuildSessionMember', %member, %member.name);
+		}
+	}
 }
 
 function serverCmddcReviewSubmission(%client, %id, %accept, %declineMessage)
@@ -229,6 +281,18 @@ function serverCmddcSaveBricks(%client, %name)
 
 function serverCmddcSpectate(%client, %id)
 {
+	if (!isObject(%id))
+		return;
+
+	%miniGame = %client.miniGame;
+
+	if (!isObject(%miniGame) || %miniGame.buildSession || (%miniGame.duelist1 != %miniGame && %miniGame.duelist2 != %miniGame))
+	{
+		%targetMiniGame = %id.miniGame;
+
+		if (isObject(%targetMiniGame) && %targetMiniGame != %miniGame && !%targetMiniGame.buildSession && %targetMiniGame.duel)
+			%targetMiniGame.addMember(%client);
+	}
 }
 
 function serverCmddcStartBuilding(%client)
@@ -391,8 +455,9 @@ function GameConnection::onClientEnterGame(%this)
 {
 	Parent::onClientEnterGame(%this);
 
+	%this.partition = dsWorldPartitionManagerSO.centerPartition;
 	commandToClient(%this, 'dcPing', dsLegacyDataServer.port);
-	commandToAllExcept(%this, 'dcSetPlayer', %this, %this.name, 0);
+	dsChallengeManagerSO.broadcastPlayerUpdate(%this, 0, %this);
 }
 
 function GameConnection::onClientLeaveGame(%this)
@@ -400,7 +465,7 @@ function GameConnection::onClientLeaveGame(%this)
 	if (isObject(%this.challengeList))
 		%this.challengeList.delete();
 
-	commandToAllExcept(%this, 'dcRemovePlayer', %this);
+	dsChallengeManagerSO.broadcastPlayerUpdate(%this, -2, %this);
 
 	Parent::onClientLeaveGame(%this);
 }

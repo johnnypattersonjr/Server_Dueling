@@ -16,6 +16,7 @@ function dsChallengeManagerSO()
 	};
 
 	%obj.boastList = new GuiTextListCtrl();
+	%obj.duelPaneList = new SimSet();
 
 	return %obj;
 }
@@ -88,6 +89,25 @@ function dsChallengeManagerSO::removeBoast(%this, %client)
 
 	%client.challenging = "";
 	%client.challengeInfo = "";
+}
+
+function dsChallengeManagerSO::broadcastPlayerUpdate(%this, %client, %status, %ignore)
+{
+	%list = %this.duelPaneList;
+	%count = %list.getCount();
+
+	for (%i = 0; %i < %count; %i++)
+	{
+		%obj = %list.getObject(%i);
+
+		if (%obj != %ignore && !%obj.isAIControlled())
+		{
+			if (%status == -2)
+				commandToClient(%obj, 'dcRemovePlayer', %client);
+			else
+				commandToClient(%obj, 'dcSetPlayer', %client, %client.name, %status);
+		}
+	}
 }
 
 function dsChallengeManagerSO::addChallenge(%this, %client, %target, %weapon, %goal)
