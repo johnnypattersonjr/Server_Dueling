@@ -4,6 +4,7 @@ exec("./scripts/bricks.cs");
 exec("./scripts/minimalDefaultContent.cs");
 
 exec("./scripts/dsChallengeManagerSO.cs");
+exec("./scripts/dsMapManagerSO.cs");
 exec("./scripts/dsStatManagerSO.cs");
 exec("./scripts/dsWeaponManagerSO.cs");
 exec("./scripts/dsWorldPartitionManagerSO.cs");
@@ -82,7 +83,7 @@ function dsSetGhostingDistance(%distance)
 
 function startGame()
 {
-	activatePackage(Server_Dueling_Deferred);
+	stopRaytracer();
 
 	%boundarySize = 64;
 	%arenaSize = 256;
@@ -100,6 +101,8 @@ function startGame()
 	Sky.visibleDistance = %partitionSize * 2;
 	dsWorldPartitionManagerSO().generate(%partitionSeparation, %partitionSize, 256);
 
+	dsMapManagerSO();
+
 	dsLegacyDataServer($Server::Port + 7);
 	Parent::startGame();
 }
@@ -107,3 +110,6 @@ function startGame()
 }; // package Server_Dueling
 
 activatePackage(Server_Dueling);
+
+// Use a separate deferred package to override possible undesired behavior from other mods.
+schedule(1000, 0, activatePackage, Server_Dueling_Deferred);

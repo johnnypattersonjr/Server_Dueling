@@ -29,6 +29,9 @@ function dsWeaponManagerSO::buildListFromDatablockGroup(%this)
 			continue;
 		}
 
+		if (!isObject(%db.maps))
+			%db.maps = new SimSet(%db);
+
 		%list.addRow(%db, %db.uiName);
 	}
 
@@ -39,9 +42,14 @@ function dsWeaponManagerSO::buildListFromDatablockGroup(%this)
 		%list.sort(0, 1);
 
 		%weapons = %list.getRowId(0);
+		%defaultTargetState = 0;
 		for (%i = 1; %i < %count; %i++)
+		{
 			%weapons = %weapons TAB %list.getRowId(%i);
+			%defaultTargetState = %defaultTargetState TAB 0;
+		}
 		%this.list = %weapons;
+		%this.defaultTargetState = %defaultTargetState;
 
 		%weapons = 0 SPC %list.getRowText(0);
 		for (%i = 1; %i < %count; %i++)

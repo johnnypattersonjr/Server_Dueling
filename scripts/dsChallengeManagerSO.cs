@@ -12,7 +12,6 @@ function dsChallengeManagerSO()
 		minGoal = 3;
 		maxGoal = 9;
 		suddenDeathScore = 15;
-		winBy = 2;
 	};
 
 	%obj.boastList = new GuiTextListCtrl();
@@ -102,7 +101,7 @@ function dsChallengeManagerSO::broadcastPlayerUpdate(%this, %client, %status, %i
 
 		if (%obj != %ignore && !%obj.isAIControlled())
 		{
-			if (%status == -2)
+			if (%status < 0)
 				commandToClient(%obj, 'dcRemovePlayer', %client);
 			else
 				commandToClient(%obj, 'dcSetPlayer', %client, %client.name, %status);
@@ -126,6 +125,7 @@ function dsChallengeManagerSO::addChallenge(%this, %client, %target, %weapon, %g
 
 	if (isObject(%client) && !%client.isAIControlled())
 		commandToClient(%client, 'dcSetChallenging', 1, %weapon.uiName, %goal, 1, %target.name);
+
 	if (isObject(%target) && !%target.isAIControlled())
 		commandToClient(%target, 'dcSetChallenge', -1 * %client, %weapon.uiName, %goal, 1, %client.name);
 }
@@ -152,7 +152,11 @@ function dsChallengeManagerSO::cancelChallenge(%this, %client)
 	if (%client.challenging == 2)
 		%this.removeBoast(%client);
 	else if (%client.challenging == 1)
+	{
+		messageClient(%client.challengeTarget, '', "\c3" @ %client.name @ " \c2cancelled their challenge!");
+		messageClient(%client, '', "\c2You cancelled your challenge!");
 		%this.removeChallenge(%client, %client.challengeTarget);
+	}
 }
 
 function dsChallengeManagerSO::startDuel(%this, %duelist1, %duelist2, %weapon, %goal, %practice)
@@ -163,12 +167,15 @@ function dsChallengeManagerSO::startDuel(%this, %duelist1, %duelist2, %weapon, %
 		return -1;
 	}
 
-	%result = %partition.hostDuelingSession(%duelist1, %duelist2, %weapon, %goal, %practice);
+	if (isObject(%maps = %weapon.maps))
+	{
+		%count = %maps.getCount();
+		%map = %count ? %maps.getObject(getRandom(0, %count - 1)) : "";
+	}
+
+	%result = %partition.hostDuelingSession(%duelist1, %duelist2, %weapon, %goal, %practice, %map);
 	if (%result <= 0)
 		return 0;
-
-	// TODO: Select map and load it
-	// TODO: On map loaded, start duel
 
 	return 1;
 }

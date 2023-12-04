@@ -9,7 +9,7 @@ function dsWorldPartitionManagerSO()
 
 	%obj = new ScriptObject(dsWorldPartitionManagerSO)
 	{
-		defaultMaxBricks = 10000;
+		defaultMaxBricks = 20000;
 	};
 
 	%obj.freePartitions = new SimGroup();
@@ -77,6 +77,10 @@ function dsWorldPartitionManagerSO::generate(%this, %partitionSeparation, %parti
 		%obj.boundary = %boundary;
 		%missionCleanup.add(%boundary);
 
+		%spawnPoints = new SimSet();
+		%obj.spawnPoints = %spawnPoints;
+		%missionCleanup.add(%spawnPoints);
+
 		%k++;
 
 		if (%k == %j)
@@ -99,6 +103,21 @@ function dsWorldPartitionManagerSO::generate(%this, %partitionSeparation, %parti
 	%this.centerPartition = %centerPartition;
 	%centerPartition.createBoundary();
 	%missionCleanup.add(%centerPartition);
+}
+
+function dsWorldPartitionManagerSO::setMaxBricks(%this, %maxBricks)
+{
+	%group = %this.freePartitions;
+	%count = %group.getCount();
+	for (%i = 0; %i < %count; %i++)
+		%group.getObject(%i).maxBricks = %maxBricks;
+
+	%group = %this.usedPartitions;
+	%count = %group.getCount();
+	for (%i = 0; %i < %count; %i++)
+		%group.getObject(%i).maxBricks = %maxBricks;
+
+	%this.centerPartition.maxBricks = %maxBricks;
 }
 
 function dsWorldPartitionManagerSO::acquire(%this)
@@ -152,7 +171,8 @@ function dsWorldPartitionSO::hostBuildingSession(%this, %client)
 	%client.partition = %this;
 	%miniGame = CreateMiniGameSO(%client, "Build Session", %colorIdx, 1);
 	%miniGame.partition = %this;
-	%miniGame.InviteOnly = 1;
+	%miniGame.BrickDamage = 0;
+	%miniGame.InviteOnly = 0;
 	%miniGame.buildSession = 1;
 	%miniGame.EnableBuilding = 1;
 	%miniGame.EnablePainting = 1;
@@ -182,10 +202,18 @@ function dsWorldPartitionSO::hostBuildingSession(%this, %client)
 
 	%miniGame.Reset(%client);
 
+	%path = dsMapManagerSO.directory @ %client.bl_id @ "/.backup.cs";
+	if (isFile(%path))
+	{
+		// NOTE: Backups are auto-loaded for now, so people without the client can build without losing progress.
+		%miniGame.partition.loadBricks(%path);
+		// commandToClient(%client, 'dcLoadBackup');
+	}
+
 	return 1;
 }
 
-function dsWorldPartitionSO::hostDuelingSession(%this, %duelist1, %duelist2, %weapon, %goal, %practice)
+function dsWorldPartitionSO::hostDuelingSession(%this, %duelist1, %duelist2, %weapon, %goal, %practice, %map)
 {
 	if (isObject(%this.miniGame))
 		return 0;
@@ -197,7 +225,8 @@ function dsWorldPartitionSO::hostDuelingSession(%this, %duelist1, %duelist2, %we
 	%colorIdx = 0; // Red
 	$MiniGameColorTaken[%colorIdx] = 0;
 	%duelist1.partition = %this;
-	%miniGame = CreateMiniGameSO(%duelist1, "Duel", %colorIdx, 1);
+	%miniGame = CreateMiniGameSO(%duelist1, %practice ? "Practice Duel" : "Ranked Duel", %colorIdx, 1);
+	%miniGame.duel = 1;
 	%miniGame.partition = %this;
 	%miniGame.applyDuelingSettings(%weapon);
 	%miniGame.InviteOnly = 0;
@@ -208,7 +237,6 @@ function dsWorldPartitionSO::hostDuelingSession(%this, %duelist1, %duelist2, %we
 	%miniGame.duelistScore2 = 0;
 	%miniGame.duelistName1 = %duelist1.name;
 	%miniGame.duelistName2 = %duelist2.name;
-	%miniGame.duel = 1;
 	%miniGame.goal = %goal;
 	%miniGame.ranked = %ranked;
 
@@ -246,7 +274,29 @@ function dsWorldPartitionSO::hostDuelingSession(%this, %duelist1, %duelist2, %we
 	dsChallengeManagerSO.broadcastPlayerUpdate(%duelist1, 4, %duelist1);
 	dsChallengeManagerSO.broadcastPlayerUpdate(%duelist2, 4, %duelist2);
 
+	%miniGame.map = %map;
+	%miniGame.target = %weapon;
+
+	if (%map)
+	{
+		%name = %map.name;
+		%directory = dsMapManagerSO.directory @ %map.submitterID @ "/";
+		%path = %directory @ %name @ "-bricks.cs";
+		%this.loadBricks(%path);
+		%miniGame.messageAll('', "\c3Map \c3\"" @ %name @ "\"\c2!");
+		%miniGame.messageAll('', "\c4Builders: \c3" @ %map.getOwnersPrettyString());
+	}
+
+	%miniGame.duelReady = 1;
+	%minigame.duelEnded = "";
 	%miniGame.Reset(%duelist1);
+
+	if (!%duelist1.isAIControlled())
+		commandToClient(%duelist1, 'dcCloseWindow');
+	if (!%duelist2.isAIControlled())
+		commandToClient(%duelist2, 'dcCloseWindow');
+
+	%miniGame.messageAll('', "\c2[FT" @ %miniGame.goal @ ",WB2] \c3" @ %miniGame.duelistName1 @ " \c2[" @ %miniGame.duelistScore1 @ " - " @ %miniGame.duelistScore2 @ "] \c3" @ %miniGame.duelistName2);
 
 	return 1;
 }
@@ -268,12 +318,20 @@ function dsWorldPartitionSO::addBrick(%this, %brick)
 	if ((%bricks.getCount() + 1) > %this.maxBricks)
 		return 0;
 
-	%brick.partition = %partition;
+	%brick.partition = %this;
 	%bricks.add(%brick);
 
+	if (nameToID(%brick.getDataBlock()) == nameToID(brickSpawnPointData))
+		%this.spawnPoints.add(%brick);
+
 	%miniGame = %this.miniGame;
-	if (isObject(%miniGame) && %miniGame.buildSession && !isEventPending(%this.reportBricksEvent))
-		%this.reportBricksEvent = %this.schedule(5000, reportBricks);
+	if (isObject(%miniGame) && %miniGame.buildSession)
+	{
+		if (%bricks.getCount() == 1)
+			%this.reportBricks();
+		else if (!isEventPending(%this.reportBricksEvent))
+			%this.reportBricksEvent = %this.schedule(5000, reportBricks);
+	}
 
 	return 1;
 }
@@ -281,7 +339,7 @@ function dsWorldPartitionSO::addBrick(%this, %brick)
 function dsWorldPartitionSO::reportBricks(%this)
 {
 	%miniGame = %this.miniGame;
-	if (!isObject(%miniGame) || !%minigame.buildSession)
+	if (!isObject(%miniGame) || !%miniGame.buildSession)
 		return;
 
 	%count = %this.bricks.getCount();
@@ -297,7 +355,7 @@ function dsWorldPartitionSO::reportBricks(%this)
 
 function dsWorldPartitionSO::removeBrick(%this, %brick)
 {
-	// NOTE: This function called when a brick is deleted, which will remove the brick from all SimSets that reference it, so no need to remove via script.
+	// NOTE: This function is called when a brick is deleted, which will remove the brick from all SimSets that reference it, so no need to remove via script.
 	// %this.bricks.remove(%brick);
 
 	%miniGame = %this.miniGame;
@@ -432,6 +490,327 @@ function dsWorldPartitionSO::ghostBoundaryToClient(%this, %client)
 		%boundary.getObject(%i).scopeToClient(%client);
 }
 
+function dsWorldPartitionSO::loadBricks(%this, %path, %offset)
+{
+	%instantGroupBackup = $instantGroup;
+	$instantGroup = nameToID(BrickGroup_999999);
+
+	if ($Server::Dedicated)
+	{
+		// Hide loading lines from console window. They will still appear in the log.
+		enableWinConsole(0);
+		%result = exec(%path);
+		%promptBackup = $Con::Prompt;
+		$Con::Prompt = "";
+		enableWinConsole(1);
+		$Con::Prompt = %promptBackup;
+	}
+	else
+	{
+		%result = exec(%path);
+	}
+
+	if (!%result)
+	{
+		error("Could not load bricks.");
+		return;
+	}
+
+	$instantGroup = %instantGroupBackup;
+
+	%bricks = nameToID(SavedBricks);
+	MissionCleanup.add(%bricks);
+
+	%count = %bricks.getCount();
+	%origin = VectorAdd(%this.position, %offset);
+	%planted = 0;
+	%lastLoadedBrickBackup = $LastLoadedBrick;
+	%lastServer_LoadFileObj = $Server_LoadFileObj;
+
+	for (%i = 0; %i < %count; %i++)
+	{
+		%brick = %bricks.getObject(%i);
+		%bl_id = %brick.stackBL_ID;
+		%brickGroup = "BrickGroup_" @ %bl_id;
+
+		if (!isObject(%brickGroup))
+		{
+			%brickGroup = new SimGroup(%brickGroup);
+			%brickGroup.bl_id = %bl_id;
+			%brickGroup.name = "\c1BL_ID: " @ %bl_id @ "\c1\c0";
+			%brickGroup.client = 0;
+			mainBrickGroup.add(%brickGroup);
+		}
+
+		%brickGroup.add(%brick);
+		%brick.client = %brickGroup.client;
+		%brick.setTransform(VectorAdd(%brick.position, %origin) SPC getWords(%brick.getTransform(), 3, 6));
+		%brick.setTrusted(1);
+
+		$Server_LoadFileObj = %brick;
+		$LastLoadedBrick = %brick;
+		if (%brick.plant())
+		{
+			%brick.schedule(0, delete);
+			continue;
+		}
+
+		%planted++;
+		%brick.setColliding(%brick.isColliding);
+		%brick.setRayCasting(%brick.isRayCasting);
+		%brick.setRendering(%brick.isRendering);
+		%brick.isColliding = "";
+		%brick.isRayCasting = "";
+		%brick.isRendering = "";
+
+		if ((%textureLookup = %brick.textureLookup) !$= "")
+		{
+			%brick.printID = 0;
+			%brick.setPrint($printNameTable[%textureLookup]);
+			%brick.textureLookup = "";
+		}
+
+		if ((%emitter = %brick.emitterDataBlock) !$= "")
+		{
+			%brick.setEmitter(%emitter);
+			%brick.emitterDataBlock = "";
+		}
+
+		if ((%item = %brick.itemDataBlock) !$= "")
+		{
+			%brick.setItem(%item);
+			%brick.itemDataBlock = "";
+		}
+
+		if ((%light = %brick.lightDataBlock) !$= "")
+		{
+			%brick.setLight(%light);
+			%brick.lightDataBlock = "";
+		}
+
+		%numEvents = %brick.numEvents;
+		for (%j = 0; %j < %numEvents; %j++)
+		{
+			%targetIdx = %brick.eventTargetIdx[%j];
+			%targetClass = %targetIdx == -1 ? "fxDTSBrick" : getWord($InputEvent_TargetList["fxDTSBrick", %brick.eventInputIdx[%j]], %targetIdx * 2 + 1);
+
+			for (%k = 0; %k < 4; %k++)
+			{
+				%field = getField($OutputEvent_parameterList[%targetClass, %brick.eventOutputIdx[%k]], %j);
+				%dataType = getWord(%field, 0);
+
+				if (%dataType $= "dataBlock" && isObject(%db = %brick.eventOutputParameter[%j, %k + 1]))
+					%brick.eventOutputParameter[%j, %k + 1] = nameToID(%db);
+			}
+		}
+	}
+
+	%bricks.delete();
+	$LastLoadedBrick = %lastLoadedBrickBackup;
+	$Server_LoadFileObj = %lastServer_LoadFileObj;
+
+	return %planted;
+}
+
+function ServerLoadSaveFile_End()
+{
+	$Server_LoadFileObj.close();
+	Parent::ServerLoadSaveFile_End();
+}
+
+function dsWorldPartitionSO::saveBricks(%this, %path, %saveOwners, %saveWorldBox)
+{
+	%bricks = %this.bricks;
+	%count = %bricks.getCount();
+
+	if (!%count)
+		return 0;
+
+	%bricks.setName("SavedBricks");
+	%origin = %this.position;
+
+	%emitters = new GuiTextListCtrl();
+	%items = new GuiTextListCtrl();
+	%lights = new GuiTextListCtrl();
+
+	if (%saveOwners)
+		%owners = new GuiTextListCtrl();
+
+	%saved = 0;
+
+	for (%i = 0; %i < %count; %i++)
+	{
+		%brick = %bricks.getObject(%i);
+		if (%brick.isDead())
+			continue;
+
+		%brickGroup = %brick.getGroup();
+		%bl_id = %brickGroup.bl_id;
+		%brick.client = 0;
+		%brick.color = getColorIDTable(%brick.colorID); // TODO: Use table defined for partition
+		%brick.partition = "";
+		%brick.position = VectorSub(%brick.position, %origin);
+		%brick.isColliding = %brick.isColliding();
+		%brick.isRayCasting = %brick.isRayCasting();
+		%brick.isRendering = %brick.isRendering();
+		%brick.stackBL_ID = %bl_id;
+
+		if (%saveOwners && %owners.getRowNumById(%bl_id) < 0)
+			%owners.addRow(%bl_id, StripMLControlChars(%brickGroup.name));
+
+		if (isObject(%emitter = %brick.emitter))
+		{
+			%brick.emitterDataBlock = %emitter.getEmitterDataBlock().getName();
+			%emitters.addRow(%brick, %emitter);
+		}
+
+		if (isObject(%item = %brick.item))
+		{
+			%brick.itemDataBlock = %item.getDataBlock().getName();
+			%items.addRow(%brick, %item);
+		}
+
+		if (isObject(%light = %brick.light))
+		{
+			%brick.lightDataBlock = %light.getDataBlock().getName();
+			%lights.addRow(%brick, %light);
+		}
+
+		// This is needed to make doors openable after load. It's OK if the door toggle threshold is bypassed on save.
+		%brick.lastDoorDataBlockSwitch = "";
+
+		%brick.emitter = "";
+		%brick.item = "";
+		%brick.light = "";
+
+		if (%brick.printID)
+		{
+			%texture = getPrintTexture(%brick.printID);
+
+			%start = 14; // strlen("Add-Ons/Print_")
+			%end = strpos(%texture, "_", %start + 1);
+			%aspectRatio = getSubStr(%texture, %start, %end - %start);
+
+			%brick.textureLookup = %aspectRatio @ "/" @ fileBase(%texture);
+		}
+
+		%numEvents = %brick.numEvents;
+		for (%j = 0; %j < %numEvents; %j++)
+		{
+			%targetIdx = %brick.eventTargetIdx[%j];
+			%targetClass = %targetIdx == -1 ? "fxDTSBrick" : getWord($InputEvent_TargetList["fxDTSBrick", %brick.eventInputIdx[%j]], %targetIdx * 2 + 1);
+
+			for (%k = 0; %k < 4; %k++)
+			{
+				%field = getField($OutputEvent_parameterList[%targetClass, %brick.eventOutputIdx[%k]], %j);
+				%dataType = getWord(%field, 0);
+
+				if (%dataType $= "dataBlock" && isObject(%db = %brick.eventOutputParameter[%j, %k + 1]))
+					%brick.eventOutputParameter[%j, %k + 1] = %db.getName();
+			}
+		}
+
+		%saved++;
+	}
+
+	if (%saved)
+	{
+		if (%saveWorldBox)
+		{
+			%minX = inf;
+			%minY = inf;
+			%minZ = inf;
+			%maxX = -inf;
+			%maxY = -inf;
+			%maxZ = -inf;
+
+			for (%i = 0; %i < %count; %i++)
+			{
+				%brick = %bricks.getObject(%i);
+				%worldBox = %brick.getWorldBox();
+				%worldBox = VectorSub(getWords(%worldBox, 0, 2), %origin) SPC VectorSub(getWords(%worldBox, 3, 5), %origin);
+
+				%brickMinX = getWord(%worldBox, 0);
+				%brickMinY = getWord(%worldBox, 1);
+				%brickMinZ = getWord(%worldBox, 2);
+				%brickMaxX = getWord(%worldBox, 3);
+				%brickMaxY = getWord(%worldBox, 4);
+				%brickMaxZ = getWord(%worldBox, 5);
+
+				%minX = %minX < %brickMinX ? %minX : %brickMinX;
+				%minY = %minY < %brickMinY ? %minY : %brickMinY;
+				%minZ = %minZ < %brickMinZ ? %minZ : %brickMinZ;
+				%maxX = %maxX > %brickMaxX ? %maxX : %brickMaxX;
+				%maxY = %maxY > %brickMaxY ? %maxY : %brickMaxY;
+				%maxZ = %maxZ > %brickMaxZ ? %maxZ : %brickMaxZ;
+			}
+
+			%this.saveWorldBox = %minX SPC %minY SPC %minZ SPC %maxX SPC %maxY SPC %maxZ;
+		}
+
+		%bricks.save(%path);
+
+		for (%i = 0; %i < %count; %i++)
+		{
+			%brick = %bricks.getObject(%i);
+			%brick.partition = %this;
+
+			%brick.position = VectorAdd(%brick.position, %origin);
+			%brick.client = %brick.getGroup().client;
+
+			if ((%search = %emitters.getRowNumById(%brick)) != -1)
+				%brick.emitter = %emitters.getRowText(%search);
+
+			if ((%search = %items.getRowNumById(%brick)) != -1)
+				%brick.item = %items.getRowText(%search);
+
+			if ((%search = %lights.getRowNumById(%brick)) != -1)
+				%brick.light = %lights.getRowText(%search);
+
+			%numEvents = %brick.numEvents;
+			for (%j = 0; %j < %numEvents; %j++)
+			{
+				%targetIdx = %brick.eventTargetIdx[%j];
+				%targetClass = %targetIdx == -1 ? "fxDTSBrick" : getWord($InputEvent_TargetList["fxDTSBrick", %brick.eventInputIdx[%j]], %targetIdx * 2 + 1);
+
+				for (%k = 0; %k < 4; %k++)
+				{
+					%field = getField($OutputEvent_parameterList[%targetClass, %brick.eventOutputIdx[%k]], %j);
+					%dataType = getWord(%field, 0);
+
+					if (%dataType $= "dataBlock" && isObject(%db = %brick.eventOutputParameter[%j, %k + 1]))
+						%brick.eventOutputParameter[%j, %k + 1] = nameToID(%db);
+				}
+			}
+		}
+
+		%bricks.setName("");
+
+		if (%saveOwners)
+		{
+			%owners.sort(0, 1);
+			%ownerCount = %owners.rowCount(); // Should always be at least 1
+
+			%ownerString = %owners.getRowId(0) SPC %owners.getRowText(0);
+
+			for (%i = 1; %i < %ownerCount; %i++)
+				%ownerString = %ownerString TAB %owners.getRowId(%i) SPC %owners.getRowText(%i);
+
+			%this.saveOwners = %ownerString;
+
+		}
+	}
+
+	if (%saveOwners)
+		%owners.delete();
+
+	%emitters.delete();
+	%items.delete();
+	%lights.delete();
+
+	return %saved;
+}
+
 function dsWorldPartitionSO::worldBoxCollide(%this, %worldBox)
 {
 	%minX = getWord(%worldBox, 0);
@@ -456,6 +835,30 @@ function dsWorldPartitionSO::worldBoxInside(%this, %worldBox)
 	return %maxX <= %this.maxX && %maxY <= %this.maxY && %maxZ <= %this.maxZ && %minX >= %this.minX && %minY >= %this.minY && %minZ >= %this.minZ;
 }
 
+function dsWorldPartitionSO::centerBricks(%this)
+{
+	%bricks = %this.bricks;
+	if (!%bricks.getCount())
+		return 0;
+
+	%path = dsMapManagerSO.directory @ ".temp-centerBricks.cs";
+	if (!%this.saveBricks(%path, 0, 1))
+		return 0;
+
+	%center = getBoxCenter(%this.saveWorldBox);
+	%offset = setWord(VectorScale(%center, -1), 2, 0);
+
+	// Offset must be a multiple of 0.5
+	%offset = VectorScale(%offset, 2);
+	%offset = (getWord(%offset, 0) | 0) SPC (getWord(%offset, 1) | 0) SPC (getWord(%offset, 2) | 0);
+	%offset = VectorScale(%offset, 0.5);
+
+	if (VectorLen(%offset) < 1 || !%this.clearBricks() || !%this.loadBricks(%path, %offset))
+		return 0;
+
+	return 1;
+}
+
 function dsWorldPartitionSO::clearBricks(%this)
 {
 	%bricks = %this.bricks;
@@ -465,7 +868,33 @@ function dsWorldPartitionSO::clearBricks(%this)
 	while (%count = %bricks.getCount())
 		%bricks.getObject(%count - 1).delete();
 
+	%this.reportBricks();
+
 	return 1;
+}
+
+function dsWorldPartitionSO::pickSpawnPoint(%this)
+{
+	%spawnPoints = %this.spawnPoints;
+	%count = %spawnPoints.getCount();
+	%lastSpawnPoint = %this.lastSpawnPoint;
+	%spawnPoint = %lastSpawnPoint;
+
+	if (%count)
+	{
+		%spawnPoint = %spawnPoints.getObject(getRandom(0, %count - 1));
+		%spawnPoints.remove(%spawnPoint);
+
+		if (isObject(%lastSpawnPoint))
+			%spawnPoints.add(%lastSpawnPoint);
+
+		%this.lastSpawnPoint = %spawnPoint;
+	}
+
+	if (isObject(%spawnPoint))
+		return VectorSub(%spawnPoint.position, "0 0 1.3") SPC getWords(%spawnPoint.getTransform(), 3);
+
+	return VectorAdd(pickSpawnPoint(), %this.position);
 }
 
 function MiniGameSO::addMember(%this, %client)
@@ -499,8 +928,9 @@ function MiniGameSO::addMember(%this, %client)
 	// Will always be false for the owner when using CreateMinigameSO.
 	if (%this.buildSession)
 	{
-		if (!%this.owner.isAIControlled())
-			commandToClient(%this.owner, 'dcSetBuildSessionMember', %client, %client.name);
+		%owner = %this.owner;
+		if (isObject(%owner) && !%owner.isAIControlled())
+			commandToClient(%owner, 'dcSetBuildSessionMember', %client, %client.name);
 
 		if (!%client.isAIControlled())
 		{
@@ -554,62 +984,132 @@ function MiniGameSO::applyDuelingSettings(%this, %weapon)
 
 function MiniGameSO::callResults(%this, %leaving)
 {
+	if (%this.duelEnded)
+		return;
+
 	switch (%this.duelResult)
 	{
 	case 1:
 		%this.duelistScore1 += 1;
-		%this.chatMessageAll(0, "\c4" @ %this.duelistName1 @ " Won the Round [" @ %this.duelistScore1 @ " - " @ %this.duelistScore2 @ "]");
 
 		if (%this.ranked)
 			dsStatManagerSO.addRound(%this.StartEquip0, %this.duelistRecord1, %this.duelistRecord2);
 	case 2:
 		%this.duelistScore2 += 1;
-		%this.chatMessageAll(0, "\c4" @ %this.duelistName2 @ " Won the Round [" @ %this.duelistScore1 @ " - " @ %this.duelistScore2 @ "]");
 
 		if (%this.ranked)
 			dsStatManagerSO.addRound(%this.StartEquip0, %this.duelistRecord2, %this.duelistRecord1);
 	case 3:
 		%this.duelistScore1 += 1;
 		%this.duelistScore2 += 1;
-		%this.chatMessageAll(0, "\c4Draw Round [" @ %this.duelistScore1 @ " - " @ %this.duelistScore2 @ "]");
 
 		if (%this.ranked)
 			dsStatManagerSO.addRound(%this.StartEquip0, %this.duelistRecord1, %this.duelistRecord2, 1);
 	}
 
+	%duelist1 = %this.duelist1;
+	%duelist2 = %this.duelist2;
 	%end = 0;
+	%ranked = %this.ranked;
 
 	if (%this.duelResult != 3 || isObject(%leaving))
 	{
-		if (%this.duelist2 == %leaving || (%this.suddenDeath && %this.duelResult == 1) || (!%this.suddenDeath && %this.duelistScore1 >= %this.goal && (%this.duelistScore1 - %this.duelistScore2) >= dsChallengeManagerSO.winBy))
-		{
-			if (%this.ranked)
-				dsStatManagerSO.addDuel(%this.StartEquip0, %this.duelistRecord1, %this.duelistRecord2);
+		%sdn1 = %this.suddenDeath && %this.duelResult == 1;
+		%sdn2 = %this.suddenDeath && %this.duelResult == 2;
+		%tko1 = %duelist2 == %leaving;
+		%tko2 = %duelist1 == %leaving;
+		%wb21 = !%this.suddenDeath && %this.duelistScore1 >= %this.goal && (%this.duelistScore1 - %this.duelistScore2) >= 2;
+		%wb22 = !%this.suddenDeath && %this.duelistScore2 >= %this.goal && (%this.duelistScore2 - %this.duelistScore1) >= 2;
 
-			%this.chatMessageAll(0, "\c4" @ %this.duelistName1 @ " Won the Duel [" @ %this.duelistScore1 @ " - " @ %this.duelistScore2 @ "]");
+		if (%sdn1 || %tko1 || %wb21)
+		{
+			if (%ranked)
+				dsStatManagerSO.addDuel(%this.StartEquip0, %this.duelistRecord1, %this.duelistRecord2);
+			%result = %this.duelistName1;
 			%end = 1;
 		}
-		else if (%this.duelist1 == %leaving || (%this.suddenDeath && %this.duelResult == 2) || (!%this.suddenDeath && %this.duelistScore2 >= %this.goal && (%this.duelistScore2 - %this.duelistScore1) >= dsChallengeManagerSO.winBy))
+		else if (%sdn2 || %tko2 || %wb22)
 		{
-			if (%this.ranked)
+			if (%ranked)
 				dsStatManagerSO.addDuel(%this.StartEquip0, %this.duelistRecord2, %this.duelistRecord1);
 
-			%this.chatMessageAll(0, "\c4" @ %this.duelistName2 @ " Won the Duel [" @ %this.duelistScore1 @ " - " @ %this.duelistScore2 @ "]");
+			%result = %this.duelistName2;
 			%end = 1;
 		}
+	}
+
+	if (%end)
+	{
+		if (%leaving)
+			%state = "[TKO]";
+		else if (%this.suddenDeath)
+			%state = "[SDN]";
+		else
+			%state = "[FT" @ %this.goal @ ",WB2]";
+
+		%secret = getRandom(0, 99) ? "" : " \c0G\c3R\c2A\c4T\c1Z\c5!";
+		%this.messageAll('', "\c3" @ %result @ " \c5won the duel!" @ %secret);
+		%this.messageAll('', "\c5" @ %state @ " \c3" @ %this.duelistName1 @ " \c5[" @ %this.duelistScore1 @ " - " @ %this.duelistScore2 @ "] \c3" @ %this.duelistName2);
+	}
+	else
+	{
+		if (%leaving)
+			%state = "[TKO]";
+		else if (%this.suddenDeath)
+			%state = "[SDN]";
+		else
+			%state = "[FT" @ %this.goal @ ",WB2]";
+
+		switch (%this.duelResult)
+		{
+		case 1:
+			%result = "\c3" @ %this.duelistName1 @ " \c2won the round!";
+		case 2:
+			%result = "\c3" @ %this.duelistName2 @ " \c2won the round!";
+		case 3:
+			%result = "\c2Draw Round!";
+		}
+
+		%this.messageAll('', %result);
+		%this.messageAll('', "\c2" @ %state @ " \c3" @ %this.duelistName1 @ " \c2[" @ %this.duelistScore1 @ " - " @ %this.duelistScore2 @ "] \c3" @ %this.duelistName2);
 	}
 
 	if (!%end && !%this.suddenDeath && (%this.duelistScore1 == dsChallengeManagerSO.suddenDeathScore || %this.duelistScore2 == dsChallengeManagerSO.suddenDeathScore))
 	{
-		%this.chatMessageAll(0, "\c4Sudden Death started! Duel is decided by next round win.");
+		%this.messageAll('', "\c0Sudden Death started! Duel is decided by next kill.");
 		%this.suddenDeath = 1;
 	}
 	else if (%end)
 	{
-		if (isObject(%this.duelist1) && !%this.duelist1.isAIControlled())
-			commandToClient(%this.duelist1, 'dcRefreshStats');
-		if (isObject(%this.duelist2) && !%this.duelist2.isAIControlled())
-			commandToClient(%this.duelist2, 'dcRefreshStats');
+		%this.duelEnded = 1;
+
+		if (!%this.testDuel)
+		{
+			%map = %this.map;
+			%target = %this.target;
+
+			%map.duels[%this.target.getName()]++;
+
+			if (isObject(%duelist1) && !%duelist1.isAIControlled())
+			{
+				%duelist1.lastMap = %map;
+				%duelist1.lastTarget = %target;
+				commandToClient(%duelist1, 'dcMapRating');
+
+				if (%ranked)
+					commandToClient(%duelist1, 'dcRefreshStats');
+			}
+
+			if (isObject(%duelist2) && !%duelist2.isAIControlled())
+			{
+				%duelist2.lastMap = %map;
+				%duelist2.lastTarget = %target;
+				commandToClient(%duelist2, 'dcMapRating');
+
+				if (%ranked)
+					commandToClient(%duelist2, 'dcRefreshStats');
+			}
+		}
 
 		%weaponIndex = dsWeaponManagerSO.getWeaponIndex(%this.StartEquip0);
 		if (%weaponIndex >= 0)
@@ -626,7 +1126,7 @@ function MiniGameSO::checkLastManStanding(%this)
 {
 	if (%this.duel)
 	{
-		if (%this.checkResults())
+		if (%this.duelReady && %this.checkResults())
 		{
 			if (%this.suddenDeath)
 			{
@@ -656,17 +1156,17 @@ function MiniGameSO::checkResults(%this, %leaving)
 	if (%player1Dead && %player2Dead)
 	{
 		%this.duelResult = 3;
-		%this.BottomPrintAll("\c4Draw", 5, 1);
+		%this.BottomPrintAll("\c2Draw!", 5, 1);
 	}
 	else if (%player2Dead)
 	{
 		%this.duelResult = 1;
-		%this.BottomPrintAll("\c4" @ %this.duelistName1 @ " Won", 5, 1);
+		%this.BottomPrintAll("\c3" @ %this.duelistName1 @ " \c2won!", 5, 1);
 	}
 	else if (%player1Dead)
 	{
 		%this.duelResult = 2;
-		%this.BottomPrintAll("\c4" @ %this.duelistName2 @ " Won", 5, 1);
+		%this.BottomPrintAll("\c3" @ %this.duelistName2 @ " \c2won!", 5, 1);
 	}
 	else
 	{
@@ -681,6 +1181,12 @@ function MiniGameSO::endGame(%this)
 	if (%this.buildSession)
 	{
 		%this.commandToAll('dcSetBuilding', 0);
+		%path = dsMapManagerSO.directory @ %this.owner.bl_id @ "/.backup.cs";
+
+		if (%this.partition.bricks.getCount())
+			%this.partition.saveBricks(%path);
+		else if (isFile(%path))
+			fileDelete(%path);
 	}
 	else if (%this.duel)
 	{
@@ -733,20 +1239,17 @@ function MiniGameSO::endGame(%this)
 
 function MiniGameSO::removeMember(%this, %client)
 {
-	if (%this.buildSession)
+	if (%this.buildSession && %this.owner != %client)
 	{
-		if (%this.owner != %client)
-		{
-			if (!%client.isAIControlled())
-				commandToClient(%client, 'dcSetBuilding', 0);
+		if (!%client.isAIControlled())
+			commandToClient(%client, 'dcSetBuilding', 0);
 
-			%this.commandToAllExcept(%client, 'dcRemoveBuildSessionMember', %client);
-		}
+		%this.commandToAllExcept(%client, 'dcRemoveBuildSessionMember', %client);
 	}
 
 	if (%this.duel && (%this.duelist1 == %client || %this.duelist2 == %client))
 	{
-		if (!%client.isAIControlled())
+		if (!%this.buildSession && !%client.isAIControlled())
 			commandToClient(%client, 'dcSetDueling', 0);
 
 		if (%this.checkResults(%client))
@@ -756,21 +1259,27 @@ function MiniGameSO::removeMember(%this, %client)
 			%this.stopDuel(%this.owner);
 	}
 
-	%client.resetGhosting();
+	// By resetting the ghosting for the owner twice (another time in endGame),
+	// the owner gets in a bad state.
+	if (%client != %this.owner)
+		%client.resetGhosting();
 
 	Parent::removeMember(%this, %client);
 
 	%client.partition = dsWorldPartitionManagerSO.centerPartition;
 
-	%camera = %client.camera;
-	%player = %client.player;
+	if (%client != %this.owner)
+	{
+		%camera = %client.camera;
+		%player = %client.player;
 
-	%client.activateGhosting();
+		%client.activateGhosting();
 
-	if (isObject(%camera))
-		%camera.scopeToClient(%client);
-	if (isObject(%player))
-		%player.scopeToClient(%client);
+		if (isObject(%camera))
+			%camera.scopeToClient(%client);
+		if (isObject(%player))
+			%player.scopeToClient(%client);
+	}
 }
 
 function MiniGameSO::reset(%this, %client)
@@ -784,6 +1293,13 @@ function MiniGameSO::reset(%this, %client)
 			%this.stopDuel(%this.owner);
 			return;
 		}
+	}
+
+	%partition = %this.partition;
+	if (%partition && isObject(%partition.lastSpawnPoint))
+	{
+		%partition.spawnPoints.add(%partition.lastSpawnPoint);
+		%partition.lastSpawnPoint = "";
 	}
 
 	Parent::reset(%this, %client);
@@ -839,6 +1355,10 @@ function MiniGameSO::startTestDuel(%this, %client, %duelist1, %duelist2, %weapon
 	%this.goal = %goal;
 
 	%this.lastResetTime = 0;
+	%this.updateEnableBuilding();
+	%this.updateEnablePainting();
+	%this.duelReady = 1;
+	%this.duelEnded = "";
 	%this.Reset(%client);
 
 	if (!%duelist1.isAIControlled())
@@ -847,6 +1367,8 @@ function MiniGameSO::startTestDuel(%this, %client, %duelist1, %duelist2, %weapon
 		commandToClient(%duelist2, 'dcCloseWindow');
 	if (!%client.isAIControlled())
 		commandToClient(%client, 'dcSetTestDuelStatus', 1);
+
+	%this.messageAll('', "\c2[FT" @ %this.goal @ ",WB2] \c3" @ %this.duelistName1 @ " \c2[" @ %this.duelistScore1 @ " - " @ %this.duelistScore2 @ "] \c3" @ %this.duelistName2);
 }
 
 function MiniGameSO::stopDuel(%this, %client)
@@ -923,6 +1445,8 @@ function MiniGameSO::stopDuel(%this, %client)
 	%this.snapshotWeaponDamage = "";
 
 	%this.duel = "";
+	%this.duelReady = "";
+	%this.duelEnded = 1;
 	%this.testDuel = "";
 	%this.duelist1 = "";
 	%this.duelist2 = "";
@@ -936,6 +1460,8 @@ function MiniGameSO::stopDuel(%this, %client)
 	%this.suddenDeath = "";
 
 	%this.lastResetTime = 0;
+	%this.updateEnableBuilding();
+	%this.updateEnablePainting();
 	%this.Reset(%client);
 
 	if (!%client.isAIControlled())
@@ -961,10 +1487,7 @@ function serverCmdSetMiniGameData(%client, %line)
 
 			switch$ (%cmd)
 			{
-			case "EB":
-			case "EP":
-			case "EW":
-			case "IO":
+			case "BD":
 			case "T":
 			default:
 				%filtered = setField(%filtered, %j++, %field);
@@ -979,18 +1502,16 @@ function serverCmdSetMiniGameData(%client, %line)
 
 function GameConnection::getSpawnPoint(%this)
 {
-	// TODO: If no minigame, pick spawnpoint from "Lobby" partition
+	if (!isObject(%this.miniGame))
+		return dsWorldPartitionManagerSO.centerPartition.pickSpawnPoint();
 
 	return Parent::getSpawnPoint(%this);
 }
 
 function MiniGameSO::pickSpawnPoint(%this, %client)
 {
-	if (%this.partition)
-	{
-		// TODO: Select from spawn bricks in partition or random location in partition.
-		return %this.partition.position;
-	}
+	if (%partition = %this.partition)
+		return %partition.pickSpawnPoint();
 
 	return Parent::pickSpawnPoint(%this, %client);
 }
@@ -1041,6 +1562,42 @@ function serverCmdDropPlayerAtCamera(%client)
 	}
 
 	Parent::serverCmdDropPlayerAtCamera(%client);
+
+	if (%override)
+		%client.isAdmin = %backupAdmin;
+}
+
+function serverCmdMagicWand(%client)
+{
+	%miniGame = %client.miniGame;
+	if (isObject(%miniGame) && %miniGame.buildSession && %miniGame.owner == %client && !%minigame.testDuel)
+	{
+		%backupAdmin = %client.isAdmin;
+		%client.isAdmin = 1;
+		%override = 1;
+	}
+
+	Parent::serverCmdMagicWand(%client);
+
+	if (%override)
+		%client.isAdmin = %backupAdmin;
+}
+
+function AdminWandImage::onHitObject(%this, %player, %a, %b, %c, %d)
+{
+	%client = %player.client;
+	if (isObject(%client))
+	{
+		%miniGame = %client.miniGame;
+		if (isObject(%miniGame) && %miniGame.buildSession && %miniGame.owner == %client)
+		{
+			%backupAdmin = %client.isAdmin;
+			%client.isAdmin = 1;
+			%override = 1;
+		}
+	}
+
+	Parent::onHitObject(%this, %player, %a, %b, %c, %d);
 
 	if (%override)
 		%client.isAdmin = %backupAdmin;
@@ -1098,7 +1655,7 @@ function fxDTSBrick::plant(%this)
 		{
 			%client = %this.client;
 
-			if ((isObject(%client) && isObject(%client.partition) && %client.partition != %partition) || !%partition.worldBoxInside(%this.getWorldBox()))
+			if ((%this != $LastLoadedBrick && isObject(%client) && isObject(%client.partition) && %client.partition != %partition) || !%partition.worldBoxInside(%this.getWorldBox()))
 			{
 				%partition.plantErrorTooFar = 1;
 				return 6;
@@ -1122,6 +1679,269 @@ function fxDTSBrick::onRemove(%this)
 		%partition.removeBrick(%this);
 
 	Parent::onRemove(%this);
+}
+
+function SimGroup::addSpawnBrick(%this, %brick)
+{
+	// Disabled
+}
+
+function SimGroup::removeSpawnBrick(%this, %brick)
+{
+	// Disabled
+}
+
+function startRayracer()
+{
+	// Disabled
+}
+
+function dsClearCenter()
+{
+	dsWorldPartitionManagerSO.centerPartition.clearBricks();
+}
+
+function dsSaveCenter()
+{
+	%path = dsMapManagerSO.directory @ ".center.cs";
+	dsWorldPartitionManagerSO.centerPartition.saveBricks(%path, 0, 0);
+}
+
+function dsLoadCenter()
+{
+	%path = dsMapManagerSO.directory @ ".center.cs";
+
+	if (isFile(%path))
+		dsWorldPartitionManagerSO.centerPartition.loadBricks(%path);
+}
+
+function MiniGameSO::updateEnableBuilding(%this)
+{
+	Parent::updateEnableBuilding(%this);
+
+	if (%this.buildSession && !%this.miniGame.testDuel)
+		commandToClient(%this.owner, 'SetBuildingDisabled', 0);
+}
+
+function MiniGameSO::updateEnablePainting(%this)
+{
+	Parent::updateEnablePainting(%this);
+
+	if (%this.buildSession && !%this.miniGame.testDuel)
+		commandToClient(%this.owner, 'SetPaintingDisabled', 0);
+}
+
+function serverCmdBuyBrick(%client, %a, %b)
+{
+	%miniGame = %client.miniGame;
+	if (isObject(%miniGame) && %miniGame.buildSession && %miniGame.owner == %client && !%miniGame.testDuel)
+	{
+		%backupEnableBuilding = %miniGame.EnableBuilding;
+		%miniGame.EnableBuilding = 1;
+		%override = 1;
+	}
+
+	Parent::serverCmdBuyBrick(%client, %a, %b);
+
+	if (%override)
+		%miniGame.EnableBuilding = %backupEnableBuilding;
+}
+
+function serverCmdInstantUseBrick(%client, %a)
+{
+	%miniGame = %client.miniGame;
+	if (isObject(%miniGame) && %miniGame.buildSession && %miniGame.owner == %client && !%miniGame.testDuel)
+	{
+		%backupEnableBuilding = %miniGame.EnableBuilding;
+		%miniGame.EnableBuilding = 1;
+		%override = 1;
+	}
+
+	Parent::serverCmdInstantUseBrick(%client, %a);
+
+	if (%override)
+		%miniGame.EnableBuilding = %backupEnableBuilding;
+}
+
+function serverCmdPlantBrick(%client)
+{
+	%miniGame = %client.miniGame;
+	if (isObject(%miniGame) && %miniGame.buildSession && %miniGame.owner == %client && !%miniGame.testDuel)
+	{
+		%backupEnableBuilding = %miniGame.EnableBuilding;
+		%miniGame.EnableBuilding = 1;
+		%override = 1;
+	}
+
+	Parent::serverCmdPlantBrick(%client);
+
+	if (%override)
+		%miniGame.EnableBuilding = %backupEnableBuilding;
+}
+
+function serverCmdUseFXCan(%client, %a)
+{
+	%miniGame = %client.miniGame;
+	if (isObject(%miniGame) && %miniGame.buildSession && %miniGame.owner == %client && !%miniGame.testDuel)
+	{
+		%backupEnablePainting = %miniGame.EnablePainting;
+		%miniGame.EnablePainting = 1;
+		%override = 1;
+	}
+
+	Parent::serverCmdUseFXCan(%client, %a);
+
+	if (%override)
+		%miniGame.EnablePainting = %backupEnablePainting;
+}
+
+function serverCmdUseInventory(%client, %a)
+{
+	%miniGame = %client.miniGame;
+	if (isObject(%miniGame) && %miniGame.buildSession && %miniGame.owner == %client && !%miniGame.testDuel)
+	{
+		%backupEnableBuilding = %miniGame.EnableBuilding;
+		%miniGame.EnableBuilding = 1;
+		%override = 1;
+	}
+
+	Parent::serverCmdUseInventory(%client, %a);
+
+	if (%override)
+		%miniGame.EnableBuilding = %backupEnableBuilding;
+}
+
+function serverCmdUseSprayCan(%client, %a)
+{
+	%miniGame = %client.miniGame;
+	if (isObject(%miniGame) && %miniGame.buildSession && %miniGame.owner == %client && !%miniGame.testDuel)
+	{
+		%backupEnablePainting = %miniGame.EnablePainting;
+		%miniGame.EnablePainting = 1;
+		%override = 1;
+	}
+
+	Parent::serverCmdUseSprayCan(%client, %a);
+
+	if (%override)
+		%miniGame.EnablePainting = %backupEnablePainting;
+}
+
+function serverCmdUseWand(%client)
+{
+	%miniGame = %client.miniGame;
+	if (isObject(%miniGame) && %miniGame.buildSession && %miniGame.owner == %client && !%miniGame.testDuel)
+	{
+		%backupEnableWand = %miniGame.EnableWand;
+		%miniGame.EnableWand = 1;
+		%override = 1;
+	}
+
+	Parent::serverCmdUseWand(%client);
+
+	if (%override)
+		%miniGame.EnableWand = %backupEnableWand;
+}
+
+function WandItem::onUse(%this, %player, %a)
+{
+	%client = %player.client;
+	if (isObject(%client))
+	{
+		%miniGame = %client.miniGame;
+		if (isObject(%miniGame) && %miniGame.buildSession && %miniGame.owner == %client && !%miniGame.testDuel)
+		{
+			%backupEnableWand = %miniGame.EnableWand;
+			%miniGame.EnableWand = 1;
+			%override = 1;
+		}
+	}
+
+	Parent::onUse(%this, %player, %a);
+
+	if (%override)
+		%miniGame.EnableWand = %backupEnableWand;
+}
+
+function serverCmdNewDuplicator(%client)
+{
+	%miniGame = %client.miniGame;
+	if (isObject(%miniGame) && %miniGame.buildSession && %miniGame.owner == %client && !%miniGame.testDuel)
+	{
+		%backupEnableBuilding = %miniGame.EnableBuilding;
+		%miniGame.EnableBuilding = 1;
+		%override = 1;
+	}
+
+	Parent::serverCmdNewDuplicator(%client);
+
+	if (%override)
+		%miniGame.EnableBuilding = %backupEnableBuilding;
+}
+
+function Player::ndFired(%this)
+{
+	%client = %this.client;
+	if (isObject(%client))
+	{
+		%miniGame = %client.miniGame;
+		if (isObject(%miniGame) && %miniGame.buildSession && %miniGame.owner == %client && !%miniGame.testDuel)
+		{
+			%backupEnableBuilding = %miniGame.EnableBuilding;
+			%miniGame.EnableBuilding = 1;
+			%override = 1;
+		}
+	}
+
+	Parent::ndFired(%this);
+
+	if (%override)
+		%miniGame.EnableBuilding = %backupEnableBuilding;
+}
+
+function serverCmdfillcan(%client)
+{
+	%miniGame = %client.miniGame;
+	if (isObject(%miniGame) && %miniGame.buildSession && %miniGame.owner == %client && !%miniGame.testDuel)
+	{
+		%backupEnablePainting = %miniGame.EnablePainting;
+		%miniGame.EnablePainting = 1;
+		%override = 1;
+	}
+
+	Parent::serverCmdfillcan(%client);
+
+	if (%override)
+		%miniGame.EnablePainting = %backupEnablePainting;
+}
+
+function serverCmdAutobridge(%client)
+{
+	%miniGame = %client.miniGame;
+	if (isObject(%miniGame) && %miniGame.duel)
+		return;
+
+	Parent::serverCmdAutobridge(%client);
+}
+
+function fillcanProjectile::onCollision(%this, %obj, %a, %b, %c, %d)
+{
+	%client = %obj.client;
+	if (isObject(%client))
+	{
+		%miniGame = %client.miniGame;
+		if (isObject(%miniGame) && %miniGame.buildSession && %miniGame.owner == %client && !%miniGame.testDuel)
+		{
+			%backupEnablePainting = %miniGame.EnablePainting;
+			%miniGame.EnablePainting = 1;
+			%override = 1;
+		}
+	}
+
+	Parent::onCollision(%this, %obj, %a, %b, %c, %d);
+
+	if (%override)
+		%miniGame.EnablePainting = %backupEnablePainting;
 }
 
 }; // package Server_Dueling

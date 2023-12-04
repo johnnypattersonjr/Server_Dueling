@@ -9,6 +9,7 @@ function dsStatManagerSO()
 
 	%obj = new ScriptObject(dsStatManagerSO)
 	{
+		defaultMaxSaves = 10;
 		dirtyCheckPeriodMs = 10000;
 		recordDirectory = "config/server/dueling/records/";
 	};
@@ -79,7 +80,10 @@ function dsStatManagerSO::dirtyCheck(%this)
 	{
 		%record = %list.getRowId(%i);
 		%record.dirty = "";
+		%maps = %record.maps;
+		%record.maps = "";
 		%record.save(%this.recordDirectory @ %record.bl_id @ ".cs");
+		%record.maps = %maps;
 	}
 	%list.clear();
 
@@ -129,6 +133,9 @@ function dsStatManagerSO::getRecordFromClient(%this, %client, %create)
 		}
 
 		$instantGroup = %instantGroupBackup;
+
+		if (%record)
+			%record.maps = new SimSet();
 	}
 
 	return %record;
@@ -179,6 +186,9 @@ function dsStatManagerSO::getRecordFromID(%this, %bl_id, %create)
 		}
 
 		$instantGroup = %instantGroupBackup;
+
+		if (%record)
+			%record.maps = new SimSet();
 	}
 
 	return %record;
@@ -231,6 +241,7 @@ function serverCmdUpdateBodyParts(%client, %arg1, %arg2, %arg3, %arg4, %arg5, %a
 	%record = dsStatManagerSO.getRecordFromClient(%client, 1);
 	%record.snapshotAvatar(%client);
 	%client.avatarSaved = 1;
+	%client.statRecord = %record;
 }
 
 }; // package Server_Dueling
