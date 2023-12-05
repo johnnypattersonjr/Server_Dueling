@@ -58,7 +58,6 @@ function dsCreateGhostingSky()
 	// The server-side camera query used for ghosting uses the last created Sky.
 	%sky = new Sky(:Sky)
 	{
-		// position = "100000 100000 100000";
 		position = "0 0 0";
 		scale = "0 0 0";
 		visibleDistance = 0; // Has internal minimum of 50.
@@ -81,7 +80,7 @@ function dsSetGhostingDistance(%distance)
 	GhostingSky.visibleDistance = %distance;
 }
 
-function startGame()
+function dsStartGame()
 {
 	stopRaytracer();
 
@@ -92,19 +91,27 @@ function startGame()
 
 	DisabledDataBlockGroup();
 
+	Sky.visibleDistance = %partitionSize * 2;
+	dsWorldPartitionManagerSO().generate(%partitionSeparation, %partitionSize, 128);
+
 	dsChallengeManagerSO();
 	dsCreateGhostingSky();
 	dsStatManagerSO();
 	dsWeaponManagerSO().buildListFromDatablockGroup();
 
 	dsSetGhostingDistance(%partitionSize);
-	Sky.visibleDistance = %partitionSize * 2;
-	dsWorldPartitionManagerSO().generate(%partitionSeparation, %partitionSize, 256);
 
 	dsMapManagerSO();
 
 	dsLegacyDataServer($Server::Port + 7);
+}
+
+function startGame()
+{
 	Parent::startGame();
+
+	// This is deferred so there is time for the environment to init.
+	schedule(0, 0, dsStartGame);
 }
 
 }; // package Server_Dueling

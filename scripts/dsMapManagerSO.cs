@@ -174,8 +174,6 @@ function dsMapManagerSO::removeSubmission(%this, %map)
 
 function dsMapManagerSO::sendSubmissions(%this, %client)
 {
-	%this.submissions.remove(%map);
-
 	%submissions = %this.submissions;
 	%count = %submissions.getCount();
 

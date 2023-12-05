@@ -16,6 +16,13 @@ function dsWorldPartitionManagerSO()
 	%obj.usedPartitions = new SimGroup();
 	%obj.partitionPositionTable = new GuiTextListCtrl();
 
+	// Force advanced environment mode so loaded map settings are never lost.
+	if ($EnvGuiServer::SimpleMode)
+	{
+		$EnvGuiServer::SimpleMode = 0;
+		EnvGuiServer::getIdxFromFilenames();
+	}
+
 	return %obj;
 }
 
@@ -81,6 +88,62 @@ function dsWorldPartitionManagerSO::generate(%this, %partitionSeparation, %parti
 		%obj.spawnPoints = %spawnPoints;
 		%missionCleanup.add(%spawnPoints);
 
+		if (%i == 0)
+		{
+			%groundPlane = nameToID(groundPlane);
+			%sky = nameToID(Sky);
+			%sun = nameToID(Sun);
+			%sunLight = nameToID(SunLight);
+
+			%this.defaultGroundPlaneColor = %groundPlane.color;
+			%this.defaultGroundPlaneScrollSpeed = %groundPlane.scrollSpeed;
+
+			%this.defaultSkyColor = %sky.skyColor;
+			%this.defaultSkyFogColor = %sky.fogColor;
+			%this.defaultSkyFogDistance = %sky.fogDistance;
+
+			%this.defaultSunAmbientColor = %sun.ambient;
+			%this.defaultSunAzimuth = %sun.azimuth;
+			%this.defaultSunDirectColor = %sun.color;
+			%this.defaultSunElevation = %sun.elevation;
+			%this.defaultSunShadowColor = %sun.shadowColor;
+
+			%this.defaultSunLightColor = %sunLight.color;
+			%this.defaultSunLightLocalPath = %sunLight.LocalFlareBitmap;
+			%this.defaultSunLightRemotePath = %sunLight.RemoteFlareBitmap;
+			%this.defaultSunLightSize = %sunLight.FlareSize;
+		}
+		else
+		{
+			%groundPlane = new fxPlane(:groundPlane);
+			%groundPlane.bottomTexture = groundPlane.bottomTexture;
+			%groundPlane.topTexture = groundPlane.topTexture;
+			%sky = new Sky(:Sky);
+			%sky.setName("");
+			%sun = new Sun(:Sun);
+			%sunLight = new fxSunLight(:SunLight);
+			%missionCleanup.add(%groundPlane);
+			%missionCleanup.add(%sky);
+			%missionCleanup.add(%sun);
+			%missionCleanup.add(%sunLight);
+		}
+
+		%sun.setScopeAlways();
+		GhostAlwaysSet.remove(%sun);
+		%obj.sun = %sun;
+
+		%sky.setScopeAlways();
+		GhostAlwaysSet.remove(%sky);
+		%obj.sky = %sky;
+
+		%sunLight.setScopeAlways();
+		GhostAlwaysSet.remove(%sunLight);
+		%obj.sunLight = %sunLight;
+
+		%groundPlane.setScopeAlways();
+		GhostAlwaysSet.remove(%groundPlane);
+		%obj.groundPlane = %groundPlane;
+
 		%k++;
 
 		if (%k == %j)
@@ -128,7 +191,7 @@ function dsWorldPartitionManagerSO::acquire(%this)
 	if (!%count)
 		return 0;
 
-	%partition = %freePartitions.getObject(getRandom(0, %count));
+	%partition = %freePartitions.getObject(getRandom(0, %count - 1));
 	%this.usedPartitions.add(%partition);
 
 	%partition.createBoundary();
@@ -155,6 +218,12 @@ function dsWorldPartitionManagerSO::release(%this, %partition)
 {
 	%partition.clearBricks();
 	%partition.deleteBoundary();
+
+	%partition.pushEnvironment();
+	EnvGuiServer::SetSimpleMode();
+	EnvGuiServer::readAdvancedVarsFromSimple();
+	EnvGuiServer::SetAdvancedMode();
+	%partition.popEnvironment();
 
 	%this.freePartitions.add(%partition);
 }
@@ -188,6 +257,8 @@ function dsWorldPartitionSO::hostBuildingSession(%this, %client)
 	commandToClient(%client, 'dcCloseWindow');
 	commandToClient(%client, 'dcSetBuilding', 2);
 	commandToClient(%client, 'dcSetBuildSessionMember', %client, %client.name);
+	if (!%client.isAdmin)
+		commandToClient(%client, 'SetAdminLevel', -1);
 
 	messageClient(%client, '', '\c5Mini-game created.');
 	commandToClient(%client, 'SetPlayingMiniGame', 1);
@@ -282,6 +353,7 @@ function dsWorldPartitionSO::hostDuelingSession(%this, %duelist1, %duelist2, %we
 		%name = %map.name;
 		%directory = dsMapManagerSO.directory @ %map.submitterID @ "/";
 		%path = %directory @ %name @ "-bricks.cs";
+		%this.loadEnvironment(%map);
 		%this.loadBricks(%path);
 		%miniGame.messageAll('', "\c3Map \c3\"" @ %name @ "\"\c2!");
 		%miniGame.messageAll('', "\c4Builders: \c3" @ %map.getOwnersPrettyString());
@@ -488,6 +560,36 @@ function dsWorldPartitionSO::ghostBoundaryToClient(%this, %client)
 
 	for (%i = 0; %i < %count; %i++)
 		%boundary.getObject(%i).scopeToClient(%client);
+}
+
+function dsWorldPartitionSO::scopeEnvironment(%this, %client)
+{
+	%this.groundPlane.scopeToClient(%client);
+	%this.sky.scopeToClient(%client);
+	%this.sun.scopeToClient(%client);
+	%this.sunLight.scopeToClient(%client);
+}
+
+function dsWorldPartitionSO::pushEnvironment(%this)
+{
+	if (%this == dsWorldPartitionManagerSO.centerPartition)
+		return;
+
+	%this.groundPlane.setName("groundPlane");
+	%this.sky.setName("Sky");
+	%this.sun.setName("Sun");
+	%this.sunLight.setName("SunLight");
+}
+
+function dsWorldPartitionSO::popEnvironment(%this)
+{
+	if (%this == dsWorldPartitionManagerSO.centerPartition)
+		return;
+
+	%this.groundPlane.setName("");
+	%this.sky.setName("");
+	%this.sun.setName("");
+	%this.sunLight.setName("");
 }
 
 function dsWorldPartitionSO::loadBricks(%this, %path, %offset)
@@ -903,19 +1005,12 @@ function MiniGameSO::addMember(%this, %client)
 
 	Parent::addMember(%this, %client);
 
-	%camera = %client.camera;
-	%player = %client.player;
-
-	%client.activateGhosting();
-
-	if (isObject(%camera))
-		%camera.scopeToClient(%client);
-	if (isObject(%player))
-		%player.scopeToClient(%client);
-
 	%partition = %this.partition;
 	if (%partition)
 		%client.partition = %partition;
+
+	%client.activateGhosting();
+	%client.onActivateGhosting();
 
 	// TODO: Verify whether this is necessary
 	// %partition = %this.partition ? %this.partition : %client.partition;
@@ -947,6 +1042,149 @@ function MiniGameSO::addMember(%this, %client)
 			%client.InstantRespawn();
 		}
 	}
+}
+
+function dsWorldPartitionSO::loadEnvironment(%this, %map)
+{
+	%this.pushEnvironment();
+
+	if (%map.environment)
+	{
+		%groundPlane = %this.groundPlane;
+		%sky = %this.sky;
+		%sun = %this.sun;
+		%sunLight = %this.sunLight;
+
+		%groundPlane.color = %map.groundPlaneColor;
+		%groundPlane.blend = getWord(%groundPlane.color, 3) < 255;
+		%groundPlane.scrollSpeed = %map.groundPlaneScrollSpeed;
+		%groundPlane.sendUpdate();
+
+		%sky.skyColor = %map.skyColor;
+		%sky.fogColor = %map.skyFogColor;
+		%sky.fogDistance = %map.skyFogDistance;
+		%sky.sendUpdate();
+
+		%sun.ambient = %map.sunAmbientColor;
+		%sun.azimuth = %map.sunAzimuth;
+		%sun.color = %map.sunDirectColor;
+		%sun.elevation = %map.sunElevation;
+		%sun.shadowColor = %map.sunShadowColor;
+		%sun.sendUpdate();
+
+		%sunLight.color = %map.sunLightColor;
+		%sunLight.FlareSize = %map.sunLightSize;
+		%sunLight.setFlareBitmaps(%map.sunLightLocalPath, %map.sunLightRemotePath);
+		%sunLight.sendUpdate();
+	}
+	else
+	{
+		EnvGuiServer::SetSimpleMode();
+		EnvGuiServer::readAdvancedVarsFromSimple();
+		EnvGuiServer::SetAdvancedMode();
+	}
+
+	%this.popEnvironment();
+}
+
+function dsWorldPartitionSO::setEnvGuiPrefs(%this)
+{
+	%groundPlane = %this.groundPlane;
+	%sky = %this.sky;
+	%sun = %this.sun;
+	%sunLight = %this.sunLight;
+
+	for (%i = $EnvGuiServer::SunFlareCount - 1; %i >= 0; %i--)
+		if (%sunLight.LocalFlareBitmap $= $EnvGuiServer::SunFlare[%i])
+			break;
+	$EnvGuiServer::SunFlareTopIdx = %i;
+
+	for (%i = $EnvGuiServer::SunFlareCount - 1; %i >= 0; %i--)
+		if (%sunLight.RemoteFlareBitmap $= $EnvGuiServer::SunFlare[%i])
+			break;
+	$EnvGuiServer::SunFlareBottomIdx = %i;
+
+	$EnvGuiServer::AmbientLightColor = %sun.ambient;
+	$EnvGuiServer::DirectLightColor = %sun.color;
+	$EnvGuiServer::FogColor = getColorI(%sky.fogColor);
+	$EnvGuiServer::FogDistance = %sky.fogDistance;
+	$EnvGuiServer::GroundColor = getColorF(%groundPlane.color);
+	$EnvGuiServer::GroundScrollX = getWord(%groundPlane.scrollSpeed, 0);
+	$EnvGuiServer::GroundScrollY = getWord(%groundPlane.scrollSpeed, 1);
+	$EnvGuiServer::ShadowColor = %sun.shadowColor;
+	$EnvGuiServer::SkyColor = getColorI(%sky.skyColor);
+	$EnvGuiServer::SunAzimuth = %sun.azimuth;
+	$EnvGuiServer::SunElevation = %sun.elevation;
+	$EnvGuiServer::SunFlareColor = %sunLight.color;
+	$EnvGuiServer::SunFlareSize = %sunLight.FlareSize;
+}
+
+function dsWorldPartitionSO::saveEnvironment(%this, %map)
+{
+	%groundPlane = %this.groundPlane;
+	%sky = %this.sky;
+	%sun = %this.sun;
+	%sunLight = %this.sunLight;
+	%mgr = nameToID(dsWorldPartitionManagerSO);
+
+	if (%mgr.defaultGroundPlaneColor $= %groundPlane.color &&
+		%mgr.defaultGroundPlaneScrollSpeed $= %groundPlane.scrollSpeed &&
+		%mgr.defaultSkyColor $= %sky.skyColor &&
+		%mgr.defaultSkyFogColor $= %sky.fogColor &&
+		%mgr.defaultSkyFogDistance == %sky.fogDistance &&
+		%mgr.defaultSunAmbientColor $= %sun.ambient &&
+		%mgr.defaultSunAzimuth == %sun.azimuth &&
+		%mgr.defaultSunDirectColor $= %sun.color &&
+		%mgr.defaultSunElevation == %sun.elevation &&
+		%mgr.defaultSunShadowColor $= %sun.shadowColor &&
+		%mgr.defaultSunLightColor $= %sunLight.color &&
+		%mgr.defaultSunLightLocalPath $= %sunLight.LocalFlareBitmap &&
+		%mgr.defaultSunLightRemotePath $= %sunLight.RemoteFlareBitmap &&
+		%mgr.defaultSunLightSize == %sunLight.FlareSize
+	)
+	{
+		%map.environment = "";
+
+		%map.groundPlaneColor = "";
+		%map.groundPlaneScrollSpeed = "";
+
+		%map.skyColor = "";
+		%map.skyFogColor = "";
+		%map.skyFogDistance = "";
+
+		%map.sunAmbientColor = "";
+		%map.sunAzimuth = "";
+		%map.sunDirectColor = "";
+		%map.sunElevation = "";
+		%map.sunShadowColor = "";
+
+		%map.sunLightColor = "";
+		%map.sunLightLocalPath = "";
+		%map.sunLightRemotePath = "";
+		%map.sunLightSize = "";
+
+		return;
+	}
+
+	%map.environment = 1;
+
+	%map.groundPlaneColor = %groundPlane.color;
+	%map.groundPlaneScrollSpeed = %groundPlane.scrollSpeed;
+
+	%map.skyColor = %sky.skyColor;
+	%map.skyFogColor = %sky.fogColor;
+	%map.skyFogDistance = %sky.fogDistance;
+
+	%map.sunAmbientColor = %sun.ambient;
+	%map.sunAzimuth = %sun.azimuth;
+	%map.sunDirectColor = %sun.color;
+	%map.sunElevation = %sun.elevation;
+	%map.sunShadowColor = %sun.shadowColor;
+
+	%map.sunLightColor = %sunLight.color;
+	%map.sunLightLocalPath = %sunLight.LocalFlareBitmap;
+	%map.sunLightRemotePath = %sunLight.RemoteFlareBitmap;
+	%map.sunLightSize = %sunLight.FlareSize;
 }
 
 function MiniGameSO::applyDuelingSettings(%this, %weapon)
@@ -1178,10 +1416,12 @@ function MiniGameSO::checkResults(%this, %leaving)
 
 function MiniGameSO::endGame(%this)
 {
+	%owner = %this.owner;
+
 	if (%this.buildSession)
 	{
 		%this.commandToAll('dcSetBuilding', 0);
-		%path = dsMapManagerSO.directory @ %this.owner.bl_id @ "/.backup.cs";
+		%path = dsMapManagerSO.directory @ %owner.bl_id @ "/.backup.cs";
 
 		if (%this.partition.bricks.getCount())
 			%this.partition.saveBricks(%path);
@@ -1210,22 +1450,18 @@ function MiniGameSO::endGame(%this)
 
 	Parent::endGame(%this);
 
-	%this.owner.InstantRespawn();
+	%owner.InstantRespawn();
+	if (%this.buildSession && !%owner.isAdmin)
+		commandToClient(%owner, 'SetAdminLevel', 0);
 
 	for (%i = 0; %i < %numMembers; %i++)
 	{
 		%member = %member[%i];
-		%camera = %member.camera;
-		%player = %member.player;
 
-		%member.activateGhosting();
 		%member.partition = dsWorldPartitionManagerSO.centerPartition;
+		%member.activateGhosting();
+		%member.onActivateGhosting();
 		dsChallengeManagerSO.broadcastPlayerUpdate(%member, %member.dcClient ? 1 : 0, %member);
-
-		if (isObject(%camera))
-			%camera.scopeToClient(%member);
-		if (isObject(%player))
-			%player.scopeToClient(%member);
 	}
 
 	%partition = %this.partition;
@@ -1270,15 +1506,8 @@ function MiniGameSO::removeMember(%this, %client)
 
 	if (%client != %this.owner)
 	{
-		%camera = %client.camera;
-		%player = %client.player;
-
 		%client.activateGhosting();
-
-		if (isObject(%camera))
-			%camera.scopeToClient(%client);
-		if (isObject(%player))
-			%player.scopeToClient(%client);
+		%client.onActivateGhosting();
 	}
 }
 
@@ -1535,6 +1764,56 @@ function GameConnection::onGhostAlwaysObjectsReceived(%this)
 	Parent::onGhostAlwaysObjectsReceived(%this);
 }
 
+function GameConnection::onActivateGhosting(%this)
+{
+	%camera = %this.camera;
+	%player = %this.player;
+
+	if (isObject(%camera))
+		%camera.scopeToClient(%this);
+	if (isObject(%player))
+		%player.scopeToClient(%this);
+
+	if (%partition = %this.partition)
+		%partition.scopeEnvironment(%this);
+}
+
+function serverCmdEnvGui_RequestCurrentVars(%client)
+{
+	%miniGame = %client.miniGame;
+	if (isObject(%miniGame) && %miniGame.buildSession && %miniGame.owner == %client)
+	{
+		%backupAdmin = %client.isAdmin;
+		%client.isAdmin = 1;
+		%override = 1;
+	}
+
+	%client.partition.setEnvGuiPrefs();
+
+	Parent::serverCmdEnvGui_RequestCurrentVars(%client);
+
+	if (%override)
+		%client.isAdmin = %backupAdmin;
+}
+
+function serverCmdEnvGui_RequestLists(%client)
+{
+	%miniGame = %client.miniGame;
+	if (isObject(%miniGame) && %miniGame.buildSession && %miniGame.owner == %client)
+	{
+		%backupAdmin = %client.isAdmin;
+		%client.isAdmin = 1;
+		%override = 1;
+	}
+
+	%client.partition.setEnvGuiPrefs();
+
+	Parent::serverCmdEnvGui_RequestLists(%client);
+
+	if (%override)
+		%client.isAdmin = %backupAdmin;
+}
+
 function serverCmdDropCameraAtPlayer(%client)
 {
 	%miniGame = %client.miniGame;
@@ -1713,6 +1992,17 @@ function dsLoadCenter()
 
 	if (isFile(%path))
 		dsWorldPartitionManagerSO.centerPartition.loadBricks(%path);
+}
+
+function serverCmdLight(%client)
+{
+	// Prevent light use on spawn to account for ghosting tricks.
+	// When a client spawns with ghosting turned of, they think the map is dark regardless of whether it actually is, and the auto-light kicks in.
+	%player = %client.player;
+	if (isObject(%player) && (getSimTime() - %player.lightCheckSpawnTime) < 1000)
+		return;
+
+	Parent::serverCmdLight(%client);
 }
 
 function MiniGameSO::updateEnableBuilding(%this)
@@ -1944,7 +2234,67 @@ function fillcanProjectile::onCollision(%this, %obj, %a, %b, %c, %d)
 		%miniGame.EnablePainting = %backupEnablePainting;
 }
 
+function serverCmdEnvGui_ClickDefaults(%client)
+{
+	%miniGame = %client.miniGame;
+	if (isObject(%miniGame) && %miniGame.buildSession && %miniGame.owner == %client)
+	{
+		%backupAdmin = %client.isAdmin;
+		%client.isAdmin = 1;
+		%override = 1;
+	}
+
+	if (!%client.isAdmin)
+		return;
+
+	%partition = %client.partition;
+
+	if (%partition)
+		%partition.pushEnvironment();
+
+	Parent::serverCmdEnvGui_ClickDefaults(%client);
+
+	if (%partition)
+		%partition.popEnvironment();
+
+	if (%override)
+		%client.isAdmin = %backupAdmin;
+}
+
+function serverCmdEnvGui_SetVar(%client, %name, %value)
+{
+	if (strpos($dsBannedEnvGuiVars, " " @ %name @ " ") != -1)
+		return;
+
+	%miniGame = %client.miniGame;
+	if (isObject(%miniGame) && %miniGame.buildSession && %miniGame.owner == %client)
+	{
+		%backupAdmin = %client.isAdmin;
+		%client.isAdmin = 1;
+		%override = 1;
+	}
+
+	if (!%client.isAdmin)
+		return;
+
+	%partition = %client.partition;
+
+	if (%partition)
+		%partition.pushEnvironment();
+
+	Parent::serverCmdEnvGui_SetVar(%client, %name, %value);
+
+	if (%partition)
+		%partition.popEnvironment();
+
+	if (%override)
+		%client.isAdmin = %backupAdmin;
+}
+
 }; // package Server_Dueling
+
+// TODO: Implement vignette by overriding EnvGuiServer::SendVignetteAll.
+$dsBannedEnvGuiVars = " DayCycleIdx DayCycleEnabled DayLength DayOffset GroundIdx SimpleMode SkyIdx UnderWaterColor VignetteColor VignetteMultiply VisibleDistance WaterColor WaterHeight WaterIdx WaterScrollX WaterScrollY ";
 
 package Server_Dueling_Deferred {
 
@@ -1965,6 +2315,12 @@ function serverCmdPlantBrick(%client)
 		%partition.plantErrorTooFar = "";
 		messageClient(%client, 'MsgPlantError_TooFar');
 	}
+}
+
+function miniGameCanUse(%a, %b)
+{
+	// If the player is in the vacinity of something, we can assume it's fine for them to use it.
+	return 1;
 }
 
 }; // package Server_Dueling_Deferred

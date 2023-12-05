@@ -225,7 +225,9 @@ function serverCmddcLoadMap(%client, %map)
 	%name = %map.name;
 	%directory = dsMapManagerSO.directory @ %map.submitterID @ "/";
 	%path = %directory @ %name @ "-bricks.cs";
-	%client.partition.loadBricks(%path);
+	%partition = %client.partition;
+	%partition.loadEnvironment(%map);
+	%partition.loadBricks(%path);
 	%miniGame.messageAll('', "\c3" @ %client.name @ " \c2loaded map \c3\"" @ %name @ "\"\c2!");
 	%miniGame.messageAll('', "\c4Builders: \c3" @ %map.getOwnersPrettyString());
 	%miniGame.messageAll('', "\c4Weapons: \c3" @ %targetString);
@@ -247,7 +249,9 @@ function serverCmddcLoadSave(%client, %map)
 	%name = %map.name;
 	%directory = dsMapManagerSO.directory @ %map.submitterID @ "/";
 	%path = %directory @ %name @ "-bricks.cs";
-	%client.partition.loadBricks(%path);
+	%partition = %client.partition;
+	%partition.loadEnvironment(%map);
+	%partition.loadBricks(%path);
 	%miniGame.messageAll('', "\c3" @ %client.name @ " \c2loaded \c3\"" @ %name @ "\"\c2!");
 	%miniGame.messageAll('', "\c4Builders: \c3" @ %map.getOwnersPrettyString());
 }
@@ -287,7 +291,9 @@ function serverCmddcLoadSubmission(%client, %map)
 	%name = %map.name;
 	%directory = dsMapManagerSO.directory @ %map.submitterID @ "/";
 	%path = %directory @ %name @ "-bricks.cs";
-	%client.partition.loadBricks(%path);
+	%partition = %client.partition;
+	%partition.loadEnvironment(%map);
+	%partition.loadBricks(%path);
 	%miniGame.messageAll('', "\c3" @ %client.name @ " \c2loaded submission \c3\"" @ %name @ "\"\c2!");
 	%miniGame.messageAll('', "\c4Builders: \c3" @ %map.getOwnersPrettyString());
 	%miniGame.messageAll('', "\c4Weapons: \c3" @ %targetString);
@@ -380,6 +386,7 @@ function serverCmddcOverwrite(%client)
 	{
 		%map.owners = %partition.saveOwners;
 		%map.worldBox = %partition.saveWorldBox;
+		%partition.saveEnvironment(%map);
 		%map.saveMap();
 
 		%miniGame.messageAll('', "\c3" @ %client.name @ " \c2saved the bricks as \c3\"" @ %name @ "\"\c2!");
@@ -846,7 +853,7 @@ function serverCmddcViewMapStats(%client, %map)
 	if (%target = %client.viewMapsTarget)
 	{
 		%targetName = %target.getName();
-		commandToClient(%client, 'dcShowMapStats', %map.name, %map.owners, %map.duels[%targetName] | 0, %targetNameState, %map.goodRatings[%targetName] | 0, %map.badRatings[%targetName] | 0, %approver, "N/A");
+		commandToClient(%client, 'dcShowMapStats', %map.name, %map.owners, %map.duels[%targetName] | 0, %targetState, %map.goodRatings[%targetName] | 0, %map.badRatings[%targetName] | 0, %approver, "N/A");
 	}
 	else
 	{
@@ -976,7 +983,9 @@ function GameConnection::onClientEnterGame(%this)
 {
 	Parent::onClientEnterGame(%this);
 
-	%this.partition = dsWorldPartitionManagerSO.centerPartition;
+	%partition = dsWorldPartitionManagerSO.centerPartition;
+	%this.partition = %partition;
+	%partition.scopeEnvironment(%this);
 	dsChallengeManagerSO.broadcastPlayerUpdate(%this, 0, %this);
 	commandToClient(%this, 'dcPing', dsLegacyDataServer.port);
 }
@@ -1016,6 +1025,7 @@ function GameConnection::spawnPlayer(%this)
 	%player = %this.player;
 	if (isObject(%player))
 	{
+		%player.lightCheckSpawnTime = %player.spawnTime;
 		%player.spawnTime = "";
 
 		if (isObject(%miniGame) && %miniGame.duel)

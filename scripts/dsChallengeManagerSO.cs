@@ -163,9 +163,7 @@ function dsChallengeManagerSO::startDuel(%this, %duelist1, %duelist2, %weapon, %
 {
 	%partition = dsWorldPartitionManagerSO.acquire();
 	if (!isObject(%partition))
-	{
 		return -1;
-	}
 
 	if (isObject(%maps = %weapon.maps))
 	{
