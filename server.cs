@@ -4,6 +4,7 @@ exec("./scripts/bricks.cs");
 exec("./scripts/minimalDefaultContent.cs");
 
 exec("./scripts/dsChallengeManagerSO.cs");
+exec("./scripts/dsColorSetManagerSO.cs");
 exec("./scripts/dsMapManagerSO.cs");
 exec("./scripts/dsStatManagerSO.cs");
 exec("./scripts/dsWeaponManagerSO.cs");
@@ -84,6 +85,8 @@ function dsStartGame()
 {
 	stopRaytracer();
 
+	dsColorSetManagerSO().makeSprayCanGeneric();
+
 	%boundarySize = 64;
 	%arenaSize = 256;
 	%partitionSize = %arenaSize + %boundarySize;
@@ -112,6 +115,40 @@ function startGame()
 
 	// This is deferred so there is time for the environment to init.
 	schedule(0, 0, dsStartGame);
+}
+
+function detectHang(%a)
+{
+	cancel($detectHangEvent);
+	if (!%a)
+		return;
+
+	%realTime = getRealTime();
+
+	if ($detectHangLastRealTime !$= "")
+	{
+		%threshold = 3 * 1000 / 32;
+
+		%deltaRealTime = %realTime - $detectHangLastRealTime;
+		if (%deltaRealTime > %threshold)
+		{
+			%msg = "Hang: " @ %deltaRealTime @ " ms";
+			talk(%msg);
+			echo(%msg);
+		}
+	}
+
+	$detectHangLastRealTime = %realTime;
+
+	$detectHangEvent = schedule(0, 0, detectHang, %a);
+}
+
+function serverCmdDetectHangs(%client, %a)
+{
+	if (!%client.isAdmin)
+		return;
+
+	detectHang(%a);
 }
 
 }; // package Server_Dueling

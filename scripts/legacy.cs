@@ -97,8 +97,25 @@ function serverCmddcClearBricks(%client)
 	if (!isObject(%miniGame) || !%miniGame.buildSession || %miniGame.owner != %client)
 		return;
 
-	if (%miniGame.partition.clearBricks())
+	%partition = %miniGame.partition;
+	%numMembers = %miniGame.numMembers;
+
+	for (%i = 0; %i < %numMembers; %i++)
+	{
+		%member = %miniGame.member[%i];
+		%member.resetGhosting();
+	}
+
+	if (%partition.clearBricks())
 		%miniGame.messageAll('', "\c3" @ %client.name @ " \c2cleared the bricks!");
+
+	for (%i = 0; %i < %numMembers; %i++)
+	{
+		%member = %minigame.member[%i];
+		%member.preActivateGhosting();
+		%member.activateGhosting();
+		%member.onActivateGhosting();
+	}
 }
 
 function serverCmddcCloseDuelPane(%client)
@@ -219,7 +236,16 @@ function serverCmddcLoadMap(%client, %map)
 		}
 	}
 
-	if (%miniGame.partition.clearBricks())
+	%partition = %miniGame.partition;
+	%numMembers = %miniGame.numMembers;
+
+	for (%i = 0; %i < %numMembers; %i++)
+	{
+		%member = %miniGame.member[%i];
+		%member.resetGhosting();
+	}
+
+	if (%partition.clearBricks())
 		%miniGame.messageAll('', "\c3" @ %client.name @ " \c2cleared the bricks!");
 
 	%name = %map.name;
@@ -230,8 +256,17 @@ function serverCmddcLoadMap(%client, %map)
 	%partition.loadBricks(%path);
 	%miniGame.messageAll('', "\c3" @ %client.name @ " \c2loaded map \c3\"" @ %name @ "\"\c2!");
 	%miniGame.messageAll('', "\c4Builders: \c3" @ %map.getOwnersPrettyString());
+	%miniGame.messageAll('', "\c4Color Set: \c3" @ %map.colorSet);
 	%miniGame.messageAll('', "\c4Weapons: \c3" @ %targetString);
 	%miniGame.Reset(%client);
+
+	for (%i = 0; %i < %numMembers; %i++)
+	{
+		%member = %minigame.member[%i];
+		%member.preActivateGhosting();
+		%member.activateGhosting();
+		%member.onActivateGhosting();
+	}
 }
 
 function serverCmddcLoadSave(%client, %map)
@@ -254,6 +289,7 @@ function serverCmddcLoadSave(%client, %map)
 	%partition.loadBricks(%path);
 	%miniGame.messageAll('', "\c3" @ %client.name @ " \c2loaded \c3\"" @ %name @ "\"\c2!");
 	%miniGame.messageAll('', "\c4Builders: \c3" @ %map.getOwnersPrettyString());
+	%miniGame.messageAll('', "\c4Color Set: \c3" @ %map.colorSet);
 }
 
 function serverCmddcLoadSubmission(%client, %map)
@@ -285,7 +321,16 @@ function serverCmddcLoadSubmission(%client, %map)
 		}
 	}
 
-	if (%miniGame.partition.clearBricks())
+	%partition = %miniGame.partition;
+	%numMembers = %miniGame.numMembers;
+
+	for (%i = 0; %i < %numMembers; %i++)
+	{
+		%member = %miniGame.member[%i];
+		%member.resetGhosting();
+	}
+
+	if (%partition.clearBricks())
 		%miniGame.messageAll('', "\c3" @ %client.name @ " \c2cleared the bricks!");
 
 	%name = %map.name;
@@ -296,8 +341,17 @@ function serverCmddcLoadSubmission(%client, %map)
 	%partition.loadBricks(%path);
 	%miniGame.messageAll('', "\c3" @ %client.name @ " \c2loaded submission \c3\"" @ %name @ "\"\c2!");
 	%miniGame.messageAll('', "\c4Builders: \c3" @ %map.getOwnersPrettyString());
+	%miniGame.messageAll('', "\c4Color Set: \c3" @ %map.colorSet);
 	%miniGame.messageAll('', "\c4Weapons: \c3" @ %targetString);
 	%miniGame.Reset(%client);
+
+	for (%i = 0; %i < %numMembers; %i++)
+	{
+		%member = %minigame.member[%i];
+		%member.preActivateGhosting();
+		%member.activateGhosting();
+		%member.onActivateGhosting();
+	}
 }
 
 function serverCmddcMapRating(%client, %rating)
@@ -384,6 +438,7 @@ function serverCmddcOverwrite(%client)
 
 	if (%partition.saveBricks(%path, 1, 1))
 	{
+		%map.colorSet = %partition.colorSet.name;
 		%map.owners = %partition.saveOwners;
 		%map.worldBox = %partition.saveWorldBox;
 		%partition.saveEnvironment(%map);
@@ -391,6 +446,7 @@ function serverCmddcOverwrite(%client)
 
 		%miniGame.messageAll('', "\c3" @ %client.name @ " \c2saved the bricks as \c3\"" @ %name @ "\"\c2!");
 		%miniGame.messageAll('', "\c4Builders: \c3" @ %map.getOwnersPrettyString());
+		%miniGame.messageAll('', "\c4Color Set: \c3" @ %map.colorSet);
 	}
 	else
 	{
@@ -572,9 +628,9 @@ function serverCmddcSaveBricks(%client, %name)
 		return;
 
 	%len = strlen(%name);
-	%brickSuffixPos = strpos(strlwr(%name), "-bricks");
+	%brickSuffixPos = strstr(strlwr(%name), "-bricks");
 
-	if (strpos(%name, ".") == 0 || (%brickSuffixPos != -1 && %brickSuffixPos == (%len - 7)))
+	if (strstr(%name, ".") == 0 || (%brickSuffixPos != -1 && %brickSuffixPos == (%len - 7)))
 	{
 		commandToClient(%client, 'MessageBoxOK', 'Save Error', "Save name is invalid.");
 		return;
@@ -585,7 +641,7 @@ function serverCmddcSaveBricks(%client, %name)
 	{
 		%c = getSubStr(%name, %i, 1);
 
-		if (strpos(%pathBan, %c) < 0 && strcmp(%c, "\x1f") > 0 && strcmp(%c, "\x7f") < 0)
+		if (strstr(%pathBan, %c) == -1 && strcmp(%c, "\x1f") > 0 && strcmp(%c, "\x7f") < 0)
 			%sanitized = %sanitized @ %c;
 	}
 
@@ -634,6 +690,7 @@ function serverCmddcSaveBricks(%client, %name)
 		commandToClient(%client, 'dcSetSave', %map, %name, 0, 0, 0);
 		%miniGame.messageAll('', "\c3" @ %client.name @ " \c2saved the bricks as \c3\"" @ %name @ "\"\c2!");
 		%miniGame.messageAll('', "\c4Builders: \c3" @ %map.getOwnersPrettyString());
+		%miniGame.messageAll('', "\c4Color Set: \c3" @ %map.colorSet);
 	}
 	else
 	{

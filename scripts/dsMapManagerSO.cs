@@ -113,6 +113,7 @@ function dsMapManagerSO::createAndSave(%this, %client, %name)
 		return 0;
 	}
 
+	%map.colorSet = %partition.colorSet.name;
 	%map.owners = %partition.saveOwners;
 	%map.worldBox = %partition.saveWorldBox;
 	%map.saveMap();

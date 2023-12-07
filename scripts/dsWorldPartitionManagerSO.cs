@@ -47,6 +47,7 @@ function dsWorldPartitionManagerSO::generate(%this, %partitionSeparation, %parti
 
 	%missionCleanup = nameToID(MissionCleanup);
 	%freePartitions = %this.freePartitions;
+	%defaultColorSet = dsColorSetManagerSO.defaultColorSet;
 
 	// Spiral generation
 	// TODO: Use the Z axis
@@ -71,6 +72,7 @@ function dsWorldPartitionManagerSO::generate(%this, %partitionSeparation, %parti
 			minZ = %z;
 			maxZ = %z + %partitionSize;
 			maxBricks = %this.defaultMaxBricks;
+			colorSet = %defaultColorSet;
 		};
 
 		%freePartitions.add(%obj);
@@ -101,6 +103,7 @@ function dsWorldPartitionManagerSO::generate(%this, %partitionSeparation, %parti
 			%this.defaultSkyColor = %sky.skyColor;
 			%this.defaultSkyFogColor = %sky.fogColor;
 			%this.defaultSkyFogDistance = %sky.fogDistance;
+			%this.defaultSkyVisibleDistance = %sky.visibleDistance;
 
 			%this.defaultSunAmbientColor = %sun.ambient;
 			%this.defaultSunAzimuth = %sun.azimuth;
@@ -224,6 +227,8 @@ function dsWorldPartitionManagerSO::release(%this, %partition)
 	EnvGuiServer::readAdvancedVarsFromSimple();
 	EnvGuiServer::SetAdvancedMode();
 	%partition.popEnvironment();
+
+	%partition.setColorSet(dsColorSetManagerSO.defaultColorSet);
 
 	%this.freePartitions.add(%partition);
 }
@@ -623,6 +628,9 @@ function dsWorldPartitionSO::loadBricks(%this, %path, %offset)
 	%bricks = nameToID(SavedBricks);
 	MissionCleanup.add(%bricks);
 
+	if (%bricks.colorSet !$= "" && (%colorSet = dsColorSetManagerSO.findColorSet(%bricks.colorSet)))
+		%this.setColorSet(%colorSet);
+
 	%count = %bricks.getCount();
 	%origin = VectorAdd(%this.position, %offset);
 	%planted = 0;
@@ -658,12 +666,24 @@ function dsWorldPartitionSO::loadBricks(%this, %path, %offset)
 		}
 
 		%planted++;
-		%brick.setColliding(%brick.isColliding);
-		%brick.setRayCasting(%brick.isRayCasting);
-		%brick.setRendering(%brick.isRendering);
-		%brick.isColliding = "";
-		%brick.isRayCasting = "";
-		%brick.isRendering = "";
+
+		if (%brick.noColliding)
+		{
+			%brick.setColliding(0);
+			%brick.noColliding = "";
+		}
+
+		if (%brick.noRayCasting)
+		{
+			%brick.setRayCasting(0);
+			%brick.noRayCasting = "";
+		}
+
+		if (%brick.noRendering)
+		{
+			%brick.setRendering(0);
+			%brick.noRendering = "";
+		}
 
 		if ((%textureLookup = %brick.textureLookup) !$= "")
 		{
@@ -698,7 +718,7 @@ function dsWorldPartitionSO::loadBricks(%this, %path, %offset)
 
 			for (%k = 0; %k < 4; %k++)
 			{
-				%field = getField($OutputEvent_parameterList[%targetClass, %brick.eventOutputIdx[%k]], %j);
+				%field = getField($OutputEvent_parameterList[%targetClass, %brick.eventOutputIdx[%j]], %k);
 				%dataType = getWord(%field, 0);
 
 				if (%dataType $= "dataBlock" && isObject(%db = %brick.eventOutputParameter[%j, %k + 1]))
@@ -729,11 +749,15 @@ function dsWorldPartitionSO::saveBricks(%this, %path, %saveOwners, %saveWorldBox
 		return 0;
 
 	%bricks.setName("SavedBricks");
+	%bricks.colorSet = %this.colorSet.name;
 	%origin = %this.position;
 
+	%bots = new GuiTextListCtrl(); // Bot_Hole
 	%emitters = new GuiTextListCtrl();
 	%items = new GuiTextListCtrl();
 	%lights = new GuiTextListCtrl();
+	%physicalZones = new GuiTextListCtrl(); // Brick_Zones
+	%triggers = new GuiTextListCtrl(); // Brick_Zones
 
 	if (%saveOwners)
 		%owners = new GuiTextListCtrl();
@@ -749,16 +773,21 @@ function dsWorldPartitionSO::saveBricks(%this, %path, %saveOwners, %saveWorldBox
 		%brickGroup = %brick.getGroup();
 		%bl_id = %brickGroup.bl_id;
 		%brick.client = 0;
-		%brick.color = getColorIDTable(%brick.colorID); // TODO: Use table defined for partition
 		%brick.partition = "";
 		%brick.position = VectorSub(%brick.position, %origin);
-		%brick.isColliding = %brick.isColliding();
-		%brick.isRayCasting = %brick.isRayCasting();
-		%brick.isRendering = %brick.isRendering();
+		%brick.noColliding = %brick.isColliding() ? "" : 1;
+		%brick.noRayCasting = %brick.isRayCasting() ? "" : 1;
+		%brick.noRendering = %brick.isRendering() ? "" : 1;
 		%brick.stackBL_ID = %bl_id;
 
 		if (%saveOwners && %owners.getRowNumById(%bl_id) < 0)
 			%owners.addRow(%bl_id, StripMLControlChars(%brickGroup.name));
+
+		if (isObject(%bot = %brick.hBot)) // Bot_Hole
+		{
+			%brick.hBot = "";
+			%emitters.addRow(%brick, %bot);
+		}
 
 		if (isObject(%emitter = %brick.emitter))
 		{
@@ -778,12 +807,34 @@ function dsWorldPartitionSO::saveBricks(%this, %path, %saveOwners, %saveWorldBox
 			%lights.addRow(%brick, %light);
 		}
 
+		if (isObject(%physicalZone = %brick.PhysicalZone)) // Brick_Zones
+		{
+			%brick.PhysicalZone = "";
+			%brick.IsZoneBrick = "";
+			%physicalZones.addRow(%brick, %physicalZone);
+		}
+
+		if (isObject(%trigger = %brick.Trigger)) // Brick_Zones
+		{
+			%brick.Trigger = "";
+			%brick.IsZoneBrick = "";
+			%triggers.addRow(%brick, %trigger);
+		}
+
 		// This is needed to make doors openable after load. It's OK if the door toggle threshold is bypassed on save.
 		%brick.lastDoorDataBlockSwitch = "";
 
+		%brick.dontCollideAfterTrust = "";
 		%brick.emitter = "";
 		%brick.item = "";
 		%brick.light = "";
+		%brick.isRegisteredTreasureChest = "";
+		%brick.spawnVehicleSchedule = "";
+		%brick.trustCheckFinished = "";
+
+		%brick.fill = ""; // Server_NewPaintCan
+		%brick.hLastSpawnTime = ""; // Bot_Hole
+		%brick.hModS = ""; // Bot_Hole
 
 		if (%brick.printID)
 		{
@@ -804,13 +855,19 @@ function dsWorldPartitionSO::saveBricks(%this, %path, %saveOwners, %saveWorldBox
 
 			for (%k = 0; %k < 4; %k++)
 			{
-				%field = getField($OutputEvent_parameterList[%targetClass, %brick.eventOutputIdx[%k]], %j);
+				%field = getField($OutputEvent_parameterList[%targetClass, %brick.eventOutputIdx[%j]], %k);
 				%dataType = getWord(%field, 0);
 
 				if (%dataType $= "dataBlock" && isObject(%db = %brick.eventOutputParameter[%j, %k + 1]))
 					%brick.eventOutputParameter[%j, %k + 1] = %db.getName();
 			}
 		}
+
+		// This should be OK to do, as we would only matter when cancelling recent events.
+		%numEvents = %brick.numScheduledEvents;
+		for (%j = 0; %j < %numEvents; %j++)
+			%brick.scheduledEvent[%j] = "";
+		%brick.numScheduledEvents = "";
 
 		%saved++;
 	}
@@ -852,6 +909,8 @@ function dsWorldPartitionSO::saveBricks(%this, %path, %saveOwners, %saveWorldBox
 
 		%bricks.save(%path);
 
+		%treasureChest = nameToID(brickTreasureChestData);
+
 		for (%i = 0; %i < %count; %i++)
 		{
 			%brick = %bricks.getObject(%i);
@@ -859,6 +918,9 @@ function dsWorldPartitionSO::saveBricks(%this, %path, %saveOwners, %saveWorldBox
 
 			%brick.position = VectorAdd(%brick.position, %origin);
 			%brick.client = %brick.getGroup().client;
+
+			if ((%search = %bots.getRowNumById(%brick)) != -1)
+				%brick.hBot = %bots.getRowText(%search);
 
 			if ((%search = %emitters.getRowNumById(%brick)) != -1)
 				%brick.emitter = %emitters.getRowText(%search);
@@ -869,6 +931,18 @@ function dsWorldPartitionSO::saveBricks(%this, %path, %saveOwners, %saveWorldBox
 			if ((%search = %lights.getRowNumById(%brick)) != -1)
 				%brick.light = %lights.getRowText(%search);
 
+			if ((%search = %physicalZones.getRowNumById(%brick)) != -1)
+			{
+				%brick.PhysicalZone = %physicalZones.getRowText(%search);
+				%brick.IsZoneBrick = 1;
+			}
+
+			if ((%search = %triggers.getRowNumById(%brick)) != -1)
+			{
+				%brick.Trigger = %triggers.getRowText(%search);
+				%brick.IsZoneBrick = 1;
+			}
+
 			%numEvents = %brick.numEvents;
 			for (%j = 0; %j < %numEvents; %j++)
 			{
@@ -877,13 +951,16 @@ function dsWorldPartitionSO::saveBricks(%this, %path, %saveOwners, %saveWorldBox
 
 				for (%k = 0; %k < 4; %k++)
 				{
-					%field = getField($OutputEvent_parameterList[%targetClass, %brick.eventOutputIdx[%k]], %j);
+					%field = getField($OutputEvent_parameterList[%targetClass, %brick.eventOutputIdx[%j]], %k);
 					%dataType = getWord(%field, 0);
 
 					if (%dataType $= "dataBlock" && isObject(%db = %brick.eventOutputParameter[%j, %k + 1]))
 						%brick.eventOutputParameter[%j, %k + 1] = nameToID(%db);
 				}
 			}
+
+			if (%brick.getDataBlock() == %treasureChest)
+				%brick.isRegisteredTreasureChest = 1;
 		}
 
 		%bricks.setName("");
@@ -899,18 +976,90 @@ function dsWorldPartitionSO::saveBricks(%this, %path, %saveOwners, %saveWorldBox
 				%ownerString = %ownerString TAB %owners.getRowId(%i) SPC %owners.getRowText(%i);
 
 			%this.saveOwners = %ownerString;
-
 		}
 	}
 
 	if (%saveOwners)
 		%owners.delete();
 
+	%bots.delete();
 	%emitters.delete();
 	%items.delete();
 	%lights.delete();
+	%physicalZones.delete();
+	%triggers.delete();
 
 	return %saved;
+}
+
+function dsWorldPartitionSO::setColorSet(%this, %colorSet, %announce, %noUpdate)
+{
+	if (%this.colorSet == %colorSet)
+		return;
+
+	if (%noUpdate)
+	{
+		%this.colorSet = %colorSet;
+		return;
+	}
+
+	if (isObject(%miniGame = %this.miniGame))
+	{
+		%count = %miniGame.numMembers;
+		for (%i = 0; %i < %count; %i++)
+			%miniGame.member[%i].resetGhosting();
+
+		%colorSet.apply();
+
+		for (%i = 0; %i < %count; %i++)
+		{
+			%member = %miniGame.member[%i];
+			%member.transmitStaticBrickData();
+			%member.activateGhosting();
+			%member.onActivateGhosting();
+			%this.scopeEnvironment(%member);
+		}
+
+		if (%miniGame.buildSession)
+			%miniGame.commandToAll('PlayGui_LoadPaint');
+
+		if (%announce)
+			%miniGame.messageAll('', "\c2Changed color set to \c3" @ %colorSet.name @ "\c2!");
+	}
+	else
+	{
+		%group = nameToID(ClientGroup);
+		%count = %group.getCount();
+
+		for (%i = 0; %i < %count; %i++)
+		{
+			%client = %group.getObject(%i);
+			if (!%client.hasSpawnedOnce || %client.isAIControlled() || isObject(%client.miniGame))
+				continue;
+
+			%client.resetGhosting();
+		}
+
+		%colorSet.apply();
+
+		for (%i = 0; %i < %count; %i++)
+		{
+			%client = %group.getObject(%i);
+			if (!%client.hasSpawnedOnce || %client.isAIControlled() || isObject(%client.miniGame))
+				continue;
+
+			%client.transmitStaticBrickData();
+			%client.activateGhosting();
+			%client.onActivateGhosting();
+			%this.scopeEnvironment(%client);
+			commandToClient(%client, 'PlayGui_LoadPaint');
+
+			if (%announce)
+				messageClient(%client, '', "\c2Changed color set to \c3" @ %colorSet.name @ "\c2!");
+		}
+	}
+
+	%this.colorSet = %colorSet;
 }
 
 function dsWorldPartitionSO::worldBoxCollide(%this, %worldBox)
@@ -968,7 +1117,15 @@ function dsWorldPartitionSO::clearBricks(%this)
 		return 0;
 
 	while (%count = %bricks.getCount())
-		%bricks.getObject(%count - 1).delete();
+	{
+		%brick = %bricks.getObject(%count - 1);
+
+		%bot = %brick.hBot;
+		if (isObject(%bot))
+			%bot.delete();
+
+		%brick.delete();
+	}
 
 	%this.reportBricks();
 
@@ -1009,6 +1166,7 @@ function MiniGameSO::addMember(%this, %client)
 	if (%partition)
 		%client.partition = %partition;
 
+	%client.preActivateGhosting();
 	%client.activateGhosting();
 	%client.onActivateGhosting();
 
@@ -1063,6 +1221,7 @@ function dsWorldPartitionSO::loadEnvironment(%this, %map)
 		%sky.skyColor = %map.skyColor;
 		%sky.fogColor = %map.skyFogColor;
 		%sky.fogDistance = %map.skyFogDistance;
+		%sky.visibleDistance = %map.skyVisibleDistance;
 		%sky.sendUpdate();
 
 		%sun.ambient = %map.sunAmbientColor;
@@ -1117,6 +1276,7 @@ function dsWorldPartitionSO::setEnvGuiPrefs(%this)
 	$EnvGuiServer::SunElevation = %sun.elevation;
 	$EnvGuiServer::SunFlareColor = %sunLight.color;
 	$EnvGuiServer::SunFlareSize = %sunLight.FlareSize;
+	$EnvGuiServer::VisibleDistance = %sky.visibleDistance;
 }
 
 function dsWorldPartitionSO::saveEnvironment(%this, %map)
@@ -1132,6 +1292,7 @@ function dsWorldPartitionSO::saveEnvironment(%this, %map)
 		%mgr.defaultSkyColor $= %sky.skyColor &&
 		%mgr.defaultSkyFogColor $= %sky.fogColor &&
 		%mgr.defaultSkyFogDistance == %sky.fogDistance &&
+		%mgr.defaultSkyVisibleDistance == %sky.visibleDistance &&
 		%mgr.defaultSunAmbientColor $= %sun.ambient &&
 		%mgr.defaultSunAzimuth == %sun.azimuth &&
 		%mgr.defaultSunDirectColor $= %sun.color &&
@@ -1151,6 +1312,7 @@ function dsWorldPartitionSO::saveEnvironment(%this, %map)
 		%map.skyColor = "";
 		%map.skyFogColor = "";
 		%map.skyFogDistance = "";
+		%map.skyVisibleDistance = "";
 
 		%map.sunAmbientColor = "";
 		%map.sunAzimuth = "";
@@ -1174,6 +1336,7 @@ function dsWorldPartitionSO::saveEnvironment(%this, %map)
 	%map.skyColor = %sky.skyColor;
 	%map.skyFogColor = %sky.fogColor;
 	%map.skyFogDistance = %sky.fogDistance;
+	%map.skyVisibleDistance = %sky.visibleDistance;
 
 	%map.sunAmbientColor = %sun.ambient;
 	%map.sunAzimuth = %sun.azimuth;
@@ -1459,6 +1622,7 @@ function MiniGameSO::endGame(%this)
 		%member = %member[%i];
 
 		%member.partition = dsWorldPartitionManagerSO.centerPartition;
+		%member.preActivateGhosting();
 		%member.activateGhosting();
 		%member.onActivateGhosting();
 		dsChallengeManagerSO.broadcastPlayerUpdate(%member, %member.dcClient ? 1 : 0, %member);
@@ -1506,6 +1670,7 @@ function MiniGameSO::removeMember(%this, %client)
 
 	if (%client != %this.owner)
 	{
+		%client.preActivateGhosting();
 		%client.activateGhosting();
 		%client.onActivateGhosting();
 	}
@@ -1762,6 +1927,19 @@ function GameConnection::onGhostAlwaysObjectsReceived(%this)
 	}
 
 	Parent::onGhostAlwaysObjectsReceived(%this);
+}
+
+function GameConnection::preActivateGhosting(%this)
+{
+	if ((%partition = %this.partition) && (%colorSet = %partition.colorSet))
+	{
+		%colorSet.apply();
+		%this.transmitStaticBrickData();
+
+		%miniGame = %this.miniGame;
+		if (!isObject(%miniGame) || %miniGame.buildSession)
+			commandToClient(%this, 'PlayGui_LoadPaint');
+	}
 }
 
 function GameConnection::onActivateGhosting(%this)
@@ -2189,22 +2367,6 @@ function Player::ndFired(%this)
 		%miniGame.EnableBuilding = %backupEnableBuilding;
 }
 
-function serverCmdfillcan(%client)
-{
-	%miniGame = %client.miniGame;
-	if (isObject(%miniGame) && %miniGame.buildSession && %miniGame.owner == %client && !%miniGame.testDuel)
-	{
-		%backupEnablePainting = %miniGame.EnablePainting;
-		%miniGame.EnablePainting = 1;
-		%override = 1;
-	}
-
-	Parent::serverCmdfillcan(%client);
-
-	if (%override)
-		%miniGame.EnablePainting = %backupEnablePainting;
-}
-
 function serverCmdAutobridge(%client)
 {
 	%miniGame = %client.miniGame;
@@ -2263,7 +2425,7 @@ function serverCmdEnvGui_ClickDefaults(%client)
 
 function serverCmdEnvGui_SetVar(%client, %name, %value)
 {
-	if (strpos($dsBannedEnvGuiVars, " " @ %name @ " ") != -1)
+	if (strstr($dsBannedEnvGuiVars, " " @ %name @ " ") != -1)
 		return;
 
 	%miniGame = %client.miniGame;
@@ -2291,10 +2453,40 @@ function serverCmdEnvGui_SetVar(%client, %name, %value)
 		%client.isAdmin = %backupAdmin;
 }
 
+function serverCmdMissionStartPhase2Ack(%client, %a)
+{
+	if (!%client.hasSpawnedOnce)
+	{
+		%colorSet = dsWorldPartitionManagerSO.centerPartition.colorSet;
+		if (%colorSet)
+			%colorSet.apply();
+	}
+
+	Parent::serverCmdMissionStartPhase2Ack(%client, %a);
+}
+
+function Projectile::onAdd(%this)
+{
+	Parent::onAdd(%this);
+
+	if (isObject(%client = %this.client))
+	{
+		if (isObject(%miniGame = %client.miniGame) && %miniGame.duel)
+		{
+			%this.scopeToClient(%miniGame.duelist1);
+			%this.scopeToClient(%miniGame.duelist2);
+		}
+		else
+		{
+			%this.scopeToClient(%client);
+		}
+	}
+}
+
 }; // package Server_Dueling
 
 // TODO: Implement vignette by overriding EnvGuiServer::SendVignetteAll.
-$dsBannedEnvGuiVars = " DayCycleIdx DayCycleEnabled DayLength DayOffset GroundIdx SimpleMode SkyIdx UnderWaterColor VignetteColor VignetteMultiply VisibleDistance WaterColor WaterHeight WaterIdx WaterScrollX WaterScrollY ";
+$dsBannedEnvGuiVars = " DayCycleIdx DayCycleEnabled DayLength DayOffset GroundIdx SimpleMode SkyIdx UnderWaterColor VignetteColor VignetteMultiply WaterColor WaterHeight WaterIdx WaterScrollX WaterScrollY ";
 
 package Server_Dueling_Deferred {
 
