@@ -1408,7 +1408,7 @@ function dsWorldPartitionSO::setColorSet(%this, %colorSet, %announce, %noUpdate,
 		if (%announce)
 			%miniGame.messageAll('', "\c2Changed color set to \c3" @ %colorSet.name @ "\c2!");
 	}
-	else
+	else if (%this == dsWorldPartitionManagerSO.centerPartition)
 	{
 		%group = nameToID(ClientGroup);
 		%count = %group.getCount();
