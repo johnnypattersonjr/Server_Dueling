@@ -35,7 +35,7 @@ function dsMapManagerSO()
 	{
 		%relative = getSubStr(%path, %prefixLen, 1e5);
 		%name = fileName(%relative);
-		if (fileExt(%path) !$= ".cs" || strstr(%name, "-bricks.cs") != -1 || strstr(%name, ".") == 0)
+		if (fileExt(%path) !$= ".cs" || strstr(%name, "-bricks.") != -1 || strstr(%name, ".") == 0)
 		{
 			%path = findNextFile(%pattern);
 			continue;
@@ -104,21 +104,76 @@ function dsMapManagerSO::createAndSave(%this, %client, %name)
 
 	%this.maps.add(%map);
 	%client.statRecord.maps.add(%map);
-	%path = %this.directory @ %client.bl_id @ "/" @ %name @ "-bricks.cs";
+	%path = %this.directory @ %client.bl_id @ "/" @ %name @ "-bricks.bls";
 	%partition = %client.partition;
 
-	if (!%partition.saveBricks(%path, 1, 1))
+	if (%partition.queueSaveBricks(%path, 1, 1, 1))
+	{
+		%map.colorSet = %partition.colorSet.name;
+
+		%frameQueue = nameToID(dsFrameQueueSO);
+		%frameQueue.push("return " @ %this @ ".schedule(1, onSaveBricksFinished, " @ %partition @ ", " @ %map @ ");");
+		%frameQueue.process();
+	}
+	else
 	{
 		%map.delete();
 		return 0;
 	}
 
+	return %map;
+}
+
+function dsMapManagerSO::onLoadBricksFinished(%this, %partition, %map, %announceWeapons, %resetMiniGame)
+{
+	if (!isObject(%miniGame = %partition.miniGame))
+		return;
+
+	%miniGame.messageAll('', "\c4Builders: \c3" @ %map.getOwnersPrettyString());
+	%miniGame.messageAll('', "\c4Color Set: \c3" @ %map.colorSet);
+
+	if (%announceWeapons)
+	{
+		%weapons = dsWeaponManagerSO.list;
+		%count = getFieldCount(%weapons);
+
+		for (%i = 0; %i < %count; %i++)
+		{
+			%weapon = getField(%weapons, %i);
+			%itemName = %weapon.getName();
+
+			if (%map.target[%itemName])
+			{
+				if (%numWeapons++ == 1)
+					%targetString = %weapon.uiName;
+				else
+					%targetString = %targetString @ ", " @ %weapon.uiName;
+			}
+		}
+
+		%miniGame.messageAll('', "\c4Weapons: \c3" @ %targetString);
+	}
+
+	if (%resetMiniGame)
+	{
+		%miniGame.lastResetTime = 0;
+		%miniGame.reset(%miniGame.owner);
+	}
+}
+
+function dsMapManagerSO::onSaveBricksFinished(%this, %partition, %map)
+{
+	%partition.saveEnvironment(%map);
 	%map.colorSet = %partition.colorSet.name;
 	%map.owners = %partition.saveOwners;
 	%map.worldBox = %partition.saveWorldBox;
 	%map.saveMap();
 
-	return %map;
+	if (isObject(%miniGame = %partition.miniGame))
+	{
+		%miniGame.messageAll('', "\c4Builders: \c3" @ %map.getOwnersPrettyString());
+		%miniGame.messageAll('', "\c4Color Set: \c3" @ %map.colorSet);
+	}
 }
 
 function dsMapManagerSO::findSave(%this, %client, %name)

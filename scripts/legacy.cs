@@ -4,7 +4,7 @@
 
 package Server_Dueling {
 
-function serverCmddcAccept(%client, %id)
+function serverCmddcAccept(%client, %source)
 {
 	if (%client.challenging)
 		return;
@@ -14,7 +14,7 @@ function serverCmddcAccept(%client, %id)
 	if (isObject(%miniGame) && (!%miniGame.buildSession || (%miniGame.duel && !%miniGame.testDuel)))
 		return;
 
-	%result = dsChallengeManagerSO.accept(%client, %id);
+	%result = dsChallengeManagerSO.accept(%client, %source);
 
 	if (%result == -1)
 		commandToClient(%client, 'MessageBoxOK', 'Dueling Error', 'Could not allocate world partition.');
@@ -61,7 +61,7 @@ function serverCmddcCancel(%client)
 	if (!%client.challenging)
 		return;
 
-	dsChallengeManagerSO.cancelChallenge(%client);
+	dsChallengeManagerSO.cancelChallengeFrom(%client);
 }
 
 function serverCmddcCenterBricks(%client)
@@ -70,8 +70,9 @@ function serverCmddcCenterBricks(%client)
 	if (!isObject(%miniGame) || !%miniGame.buildSession || %miniGame.owner != %client)
 		return;
 
-	if (%miniGame.partition.centerBricks())
-		%miniGame.messageAll('', "\c3" @ %client.name @ " \c2centered the bricks!");
+	%miniGame.messageAll('', "\c3" @ %client.name @ " \c2is centering the bricks...");
+	if (!%miniGame.partition.queueCenterBricks(1))
+		%miniGame.messageAll('', "\c2There are no bricks to center.");
 }
 
 function serverCmddcChallenge(%client, %target, %weaponName, %goal)
@@ -98,23 +99,18 @@ function serverCmddcClearBricks(%client)
 		return;
 
 	%partition = %miniGame.partition;
-	%numMembers = %miniGame.numMembers;
+	if (%partition.clearingBricks)
+		return;
 
-	for (%i = 0; %i < %numMembers; %i++)
+	if (%partition.bricks.getCount())
 	{
-		%member = %miniGame.member[%i];
-		%member.resetGhosting();
-	}
+		%partition.clearingBricks = 1;
+		%miniGame.messageAll('', "\c3" @ %client.name @ " \c2is clearing the bricks...");
 
-	if (%partition.clearBricks())
-		%miniGame.messageAll('', "\c3" @ %client.name @ " \c2cleared the bricks!");
-
-	for (%i = 0; %i < %numMembers; %i++)
-	{
-		%member = %minigame.member[%i];
-		%member.preActivateGhosting();
-		%member.activateGhosting();
-		%member.onActivateGhosting();
+		%frameQueue = nameToID(dsFrameQueueSO);
+		%frameQueue.push("return " @ %partition @ ".dispatchClearBricks(1);");
+		%frameQueue.push("return " @ %partition @ ".schedule(1, cycleGhosting);");
+		%frameQueue.process();
 	}
 }
 
@@ -125,13 +121,22 @@ function serverCmddcCloseDuelPane(%client)
 
 function serverCmddcDecline(%client, %source)
 {
-	if (!isObject(%client.challengeList))
+	%list = %client.challengeList;
+
+	if (!isObject(%list))
+	{
+		commandToClient(%client, 'dcRemoveChallenge', %source);
+		return;
+	}
+
+	%source = ~%source;
+	%rowIdx = %list.getRowNumById(%source);
+
+	if (%rowIdx == -1)
 		return;
 
-	%source = mFloatLength(%source, 0) * -1;
-
 	dsChallengeManagerSO.removeChallenge(%source, %client);
-	messageClient(%client, '', "\c3" @ %source.name @ " \c2rejected your challenge!");
+	messageClient(%source, '', "\c3" @ %client.name @ " \c2rejected your challenge!");
 }
 
 function serverCmddcDeleteSave(%client, %map)
@@ -149,7 +154,7 @@ function serverCmddcDeleteSave(%client, %map)
 	if (isFile(%path))
 		fileDelete(%path);
 
-	%path = %directory @ %name @ "-bricks.cs";
+	%path = %directory @ %name @ "-bricks.bls";
 	if (isFile(%path))
 		fileDelete(%path);
 
@@ -202,7 +207,7 @@ function serverCmddcLoadBackup(%client, %yes)
 	// 	return;
 
 	// if (%yes)
-	// 	%miniGame.partition.loadBricks(%path);
+	// 	%miniGame.partition.queueLoadBricks(%path);
 
 	// fileDelete(%path);
 }
@@ -219,54 +224,21 @@ function serverCmddcLoadMap(%client, %map)
 		return;
 	}
 
-	%weapons = dsWeaponManagerSO.list;
-	%count = getFieldCount(%weapons);
-
-	for (%i = 0; %i < %count; %i++)
-	{
-		%weapon = getField(%weapons, %i);
-		%itemName = %weapon.getName();
-
-		if (%map.target[%itemName])
-		{
-			if (%numWeapons++ == 1)
-				%targetString = %weapon.uiName;
-			else
-				%targetString = %targetString @ ", " @ %weapon.uiName;
-		}
-	}
-
-	%partition = %miniGame.partition;
-	%numMembers = %miniGame.numMembers;
-
-	for (%i = 0; %i < %numMembers; %i++)
-	{
-		%member = %miniGame.member[%i];
-		%member.resetGhosting();
-	}
-
-	if (%partition.clearBricks())
-		%miniGame.messageAll('', "\c3" @ %client.name @ " \c2cleared the bricks!");
-
-	%name = %map.name;
 	%directory = dsMapManagerSO.directory @ %map.submitterID @ "/";
-	%path = %directory @ %name @ "-bricks.cs";
-	%partition = %client.partition;
-	%partition.loadEnvironment(%map);
-	%partition.loadBricks(%path);
-	%miniGame.messageAll('', "\c3" @ %client.name @ " \c2loaded map \c3\"" @ %name @ "\"\c2!");
-	%miniGame.messageAll('', "\c4Builders: \c3" @ %map.getOwnersPrettyString());
-	%miniGame.messageAll('', "\c4Color Set: \c3" @ %map.colorSet);
-	%miniGame.messageAll('', "\c4Weapons: \c3" @ %targetString);
-	%miniGame.Reset(%client);
+	%name = %map.name;
+	%partition = %miniGame.partition;
+	%path = %directory @ %name @ "-bricks.bls";
 
-	for (%i = 0; %i < %numMembers; %i++)
-	{
-		%member = %minigame.member[%i];
-		%member.preActivateGhosting();
-		%member.activateGhosting();
-		%member.onActivateGhosting();
-	}
+	%miniGame.messageAll('', "\c3" @ %client.name @ " \c2is loading map \c3\"" @ %name @ "\"\c2...");
+
+	%frameQueue = nameToID(dsFrameQueueSO);
+	%partition.queueClearBricks();
+	%frameQueue.push(%partition @ ".schedule(1, loadEnvironment, " @ %map @ "); return " @ %partition @ ".schedule(1, cycleGhosting);");
+	if (%colorSet = dsColorSetManagerSO.findColorSet(%map.colorSet))
+		%frameQueue.push("return " @ %partition @ ".schedule(1, setColorSet, " @ %colorSet @ ");");
+	%partition.queueLoadBricks(%path, "", 1);
+	%frameQueue.push("return " @ nameToID(dsMapManagerSO) @ ".schedule(1, onLoadBricksFinished, " @ %partition @ ", " @ %map @ ", 1, 1);");
+	%frameQueue.process();
 }
 
 function serverCmddcLoadSave(%client, %map)
@@ -283,13 +255,19 @@ function serverCmddcLoadSave(%client, %map)
 
 	%name = %map.name;
 	%directory = dsMapManagerSO.directory @ %map.submitterID @ "/";
-	%path = %directory @ %name @ "-bricks.cs";
+	%path = %directory @ %name @ "-bricks.bls";
+
 	%partition = %client.partition;
 	%partition.loadEnvironment(%map);
-	%partition.loadBricks(%path);
-	%miniGame.messageAll('', "\c3" @ %client.name @ " \c2loaded \c3\"" @ %name @ "\"\c2!");
-	%miniGame.messageAll('', "\c4Builders: \c3" @ %map.getOwnersPrettyString());
-	%miniGame.messageAll('', "\c4Color Set: \c3" @ %map.colorSet);
+
+	%miniGame.messageAll('', "\c3" @ %client.name @ " \c2is loading save \c3\"" @ %name @ "\"\c2...");
+
+	%frameQueue = nameToID(dsFrameQueueSO);
+	if (%colorSet = dsColorSetManagerSO.findColorSet(%map.colorSet))
+		%frameQueue.push("return " @ %partition @ ".schedule(1, setColorSet, " @ %colorSet @ ");");
+	%partition.queueLoadBricks(%path, "", 1);
+	%frameQueue.push("return " @ nameToID(dsMapManagerSO) @ ".schedule(1, onLoadBricksFinished, " @ %partition @ ", " @ %map @ ");");
+	%frameQueue.process();
 }
 
 function serverCmddcLoadSubmission(%client, %map)
@@ -304,54 +282,21 @@ function serverCmddcLoadSubmission(%client, %map)
 		return;
 	}
 
-	%weapons = dsWeaponManagerSO.list;
-	%count = getFieldCount(%weapons);
-
-	for (%i = 0; %i < %count; %i++)
-	{
-		%weapon = getField(%weapons, %i);
-		%itemName = %weapon.getName();
-
-		if (%map.target[%itemName])
-		{
-			if (%numWeapons++ == 1)
-				%targetString = %weapon.uiName;
-			else
-				%targetString = %targetString @ ", " @ %weapon.uiName;
-		}
-	}
-
-	%partition = %miniGame.partition;
-	%numMembers = %miniGame.numMembers;
-
-	for (%i = 0; %i < %numMembers; %i++)
-	{
-		%member = %miniGame.member[%i];
-		%member.resetGhosting();
-	}
-
-	if (%partition.clearBricks())
-		%miniGame.messageAll('', "\c3" @ %client.name @ " \c2cleared the bricks!");
-
-	%name = %map.name;
 	%directory = dsMapManagerSO.directory @ %map.submitterID @ "/";
-	%path = %directory @ %name @ "-bricks.cs";
-	%partition = %client.partition;
-	%partition.loadEnvironment(%map);
-	%partition.loadBricks(%path);
-	%miniGame.messageAll('', "\c3" @ %client.name @ " \c2loaded submission \c3\"" @ %name @ "\"\c2!");
-	%miniGame.messageAll('', "\c4Builders: \c3" @ %map.getOwnersPrettyString());
-	%miniGame.messageAll('', "\c4Color Set: \c3" @ %map.colorSet);
-	%miniGame.messageAll('', "\c4Weapons: \c3" @ %targetString);
-	%miniGame.Reset(%client);
+	%name = %map.name;
+	%partition = %miniGame.partition;
+	%path = %directory @ %name @ "-bricks.bls";
 
-	for (%i = 0; %i < %numMembers; %i++)
-	{
-		%member = %minigame.member[%i];
-		%member.preActivateGhosting();
-		%member.activateGhosting();
-		%member.onActivateGhosting();
-	}
+	%miniGame.messageAll('', "\c3" @ %client.name @ " \c2is loading submission \c3\"" @ %name @ "\"\c2...");
+
+	%frameQueue = nameToID(dsFrameQueueSO);
+	%partition.queueClearBricks();
+	%frameQueue.push(%partition @ ".schedule(1, loadEnvironment, " @ %map @ "); return " @ %partition @ ".schedule(1, cycleGhosting);");
+	if (%colorSet = dsColorSetManagerSO.findColorSet(%map.colorSet))
+		%frameQueue.push("return " @ %partition @ ".schedule(1, setColorSet, " @ %colorSet @ ");");
+	%partition.queueLoadBricks(%path, "", 1);
+	%frameQueue.push("return " @ nameToID(dsMapManagerSO) @ ".schedule(1, onLoadBricksFinished, " @ %partition @ ", " @ %map @ ", 1, 1);");
+	%frameQueue.process();
 }
 
 function serverCmddcMapRating(%client, %rating)
@@ -432,25 +377,21 @@ function serverCmddcOverwrite(%client)
 	}
 
 	%name = %map.name;
-	%directory = dsMapManagerSO.directory @ %map.submitterID @ "/";
-	%path = %directory @ %name @ "-bricks.cs";
+	%directory = dsMapManagerSO.directory @ %client.bl_id @ "/";
+	%path = %directory @ %name @ "-bricks.bls";
 	%partition = %client.partition;
 
-	if (%partition.saveBricks(%path, 1, 1))
-	{
-		%map.colorSet = %partition.colorSet.name;
-		%map.owners = %partition.saveOwners;
-		%map.worldBox = %partition.saveWorldBox;
-		%partition.saveEnvironment(%map);
-		%map.saveMap();
+	%miniGame.messageAll('', "\c3" @ %client.name @ " \c2is saving the bricks as \c3\"" @ %name @ "\"\c2...");
 
-		%miniGame.messageAll('', "\c3" @ %client.name @ " \c2saved the bricks as \c3\"" @ %name @ "\"\c2!");
-		%miniGame.messageAll('', "\c4Builders: \c3" @ %map.getOwnersPrettyString());
-		%miniGame.messageAll('', "\c4Color Set: \c3" @ %map.colorSet);
+	if (%partition.queueSaveBricks(%path, 1, 1, 1))
+	{
+		%frameQueue = nameToID(dsFrameQueueSO);
+		%frameQueue.push("return " @ nameToID(dsMapManagerSO) @ ".schedule(1, onSaveBricksFinished, " @ %partition @ ", " @ %map @ ");");
+		%frameQueue.process();
 	}
 	else
 	{
-		%miniGame.messageAll('', "\c0No bricks found!");
+		%miniGame.messageAll('', "\c0No bricks found.");
 	}
 }
 
@@ -493,12 +434,13 @@ function serverCmddcRequestTransmission(%client)
 	for (%i = 0; %i < %count; %i++)
 	{
 		%source = %list.getRowId(%i);
+
 		if (%source == %client)
 			continue;
 
-		%row = %list.getRowText(%i);
+		%info = %list.getRowText(%i);
 
-		commandToClient(%client, 'dcSetChallenge', %source, getField(%row, 0), getField(%row, 1), 0);
+		commandToClient(%client, 'dcSetChallenge', %source, getField(%info, 0), getField(%info, 1), 0);
 	}
 
 	%list = %client.challengeList;
@@ -509,9 +451,9 @@ function serverCmddcRequestTransmission(%client)
 		for (%i = 0; %i < %count; %i++)
 		{
 			%source = %list.getRowId(%i);
-			%row = %list.getRowText(%i);
+			%info = %list.getRowText(%i);
 
-			commandToClient(%client, 'dcSetChallenge', -1 * %source, getField(%row, 0), getField(%row, 1), 1, %source.name);
+			commandToClient(%client, 'dcSetChallenge', ~%source, getField(%info, 0), getField(%info, 1), 1, %source.name);
 		}
 	}
 
@@ -529,9 +471,8 @@ function serverCmddcRequestTransmission(%client)
 
 	if (%building == 2)
 	{
-		%count = %miniGame.numMembers;
-
-		for (%i = 0; %i < %count; %i++)
+		%numMembers = %miniGame.numMembers;
+		for (%i = 0; %i < %numMembers; %i++)
 		{
 			%member = %miniGame.member[%i];
 			commandToClient(%client, 'dcSetBuildSessionMember', %member, %member.name);
@@ -685,16 +626,15 @@ function serverCmddcSaveBricks(%client, %name)
 		return;
 	}
 
+	%miniGame.messageAll('', "\c3" @ %client.name @ " \c2is saving the bricks as \c3\"" @ %name @ "\"\c2...");
+
 	if (%map = dsMapManagerSO.createAndSave(%client, %name))
 	{
 		commandToClient(%client, 'dcSetSave', %map, %name, 0, 0, 0);
-		%miniGame.messageAll('', "\c3" @ %client.name @ " \c2saved the bricks as \c3\"" @ %name @ "\"\c2!");
-		%miniGame.messageAll('', "\c4Builders: \c3" @ %map.getOwnersPrettyString());
-		%miniGame.messageAll('', "\c4Color Set: \c3" @ %map.colorSet);
 	}
 	else
 	{
-		%miniGame.messageAll('', "\c0No bricks found!");
+		%miniGame.messageAll('', "\c0No bricks found.");
 	}
 }
 
@@ -732,6 +672,8 @@ function serverCmddcStartBuilding(%client)
 		return false;
 	}
 
+	dsChallengeManagerSO.cancelChallengesTo(%client);
+	dsChallengeManagerSO.cancelChallengeFrom(%client);
 	%partition.hostBuildingSession(%client);
 	return true;
 }
@@ -1049,6 +991,9 @@ function GameConnection::onClientEnterGame(%this)
 
 function GameConnection::onClientLeaveGame(%this)
 {
+	dsChallengeManagerSO.cancelChallengeFrom(%this);
+	dsChallengeManagerSO.cancelChallengesTo(%this);
+
 	if (isObject(%this.challengeList))
 		%this.challengeList.delete();
 
@@ -1060,32 +1005,70 @@ function GameConnection::onClientLeaveGame(%this)
 function GameConnection::spawnPlayer(%this)
 {
 	%miniGame = %this.miniGame;
-	if (isObject(%miniGame) && %miniGame.duel && %miniGame.duelist1 != %this && %miniGame.duelist2 != %this)
+	if (isObject(%miniGame) && %miniGame.duel && (!%miniGame.duelReady || (%miniGame.duelist1 != %this && %miniGame.duelist2 != %this)))
 	{
-		// Spectate with camera
-		%camera = %this.camera;
-		%db = %camera.getDataBlock();
-		%this.setControlObject(%camera);
-		if (%camera.mode $= "Observer")
+		%partition = %miniGame.partition;
+
+		if (!%miniGame.duelReady || !%partition.spectatorSpawnPoints.getCount())
 		{
-			%db.onTrigger(%camera, 2, 1);
-			%db.onTrigger(%camera, 2, 0);
+			// Spectate with camera
+
+			%camera = %this.camera;
+			%db = %camera.getDataBlock();
+			%this.setControlObject(%camera);
+
+			if (%minigame.duelReady && (isObject(%target = %miniGame.duelist1.player) || isObject(%target = %miniGame.duelist2.player)))
+			{
+				%camera.setOrbitMode(%target, %camera.getTransform(), 0, 8, 8);
+			}
+			else
+			{
+				%camera.setMode("Observer");
+				%partition.moveCameraToDefaultPosition(%camera);
+			}
+
+			return %this;
 		}
-		%db.onTrigger(%camera, 0, 1);
-		%db.onTrigger(%camera, 0, 0);
-		return %this;
+
+		%spectator = 1;
 	}
 
 	Parent::spawnPlayer(%this);
 
-	// Allow for spawn killing.
 	%player = %this.player;
+
 	if (isObject(%player))
 	{
+		if (%spectator)
+		{
+			%maxTools = %player.getDataBlock().maxTools;
+			%popcornSmall = nameToID(PopcornItem); // Item_Popcorn
+			%popcornLarge = nameToID(PopcornLargeItem);
+
+			if (%maxTools >= 1)
+			{
+				%player.tool[0] = %popcornLarge != -1 ? %popcornLarge : 0;
+				messageClient(%this, 'MsgItemPickup', "", 0, %player.tool[0], 1);
+			}
+
+			if (%maxTools >= 2)
+			{
+				%player.tool[1] = %popcornSmall != -1 ? %popcornSmall : 0;
+				messageClient(%this, 'MsgItemPickup', "", 1, %player.tool[1], 1);
+			}
+
+			for (%i = 2; %i < %maxTools; %i++)
+			{
+				%player.tool[%i] = 0;
+				messageClient(%this, 'MsgItemPickup', "", %i, 0, 1);
+			}
+		}
+
+		// Allow for spawn killing.
 		%player.lightCheckSpawnTime = %player.spawnTime;
 		%player.spawnTime = "";
 
-		if (isObject(%miniGame) && %miniGame.duel)
+		if (isObject(%miniGame) && %miniGame.duel && (%this == %miniGame.duelist1 || %this == %miniGame.duelist2))
 		{
 			%player.scopeToClient(%miniGame.duelist1);
 			%player.scopeToClient(%miniGame.duelist2);
@@ -1094,6 +1077,11 @@ function GameConnection::spawnPlayer(%this)
 		{
 			%player.scopeToClient(%this);
 		}
+	}
+	else if (isObject(%partition = %this.partition) && isObject(%camera = %this.camera))
+	{
+		%camera.setMode("Observer");
+		%partition.moveCameraToDefaultPosition(%camera);
 	}
 
 	return %this;

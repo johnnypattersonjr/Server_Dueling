@@ -24,3 +24,8 @@ function brick64xBoundaryCubeData::onLoadPlant(%this, %brick)
 	%brick.setRayCasting(0);
 	%brick.setRendering(0);
 }
+
+datablock fxDTSBrickData(brickSpectatorSpawnPointData : brickSpawnPointData)
+{
+	uiName = "Spectator Spawn";
+};

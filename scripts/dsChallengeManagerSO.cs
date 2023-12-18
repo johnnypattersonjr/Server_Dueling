@@ -20,9 +20,9 @@ function dsChallengeManagerSO()
 	return %obj;
 }
 
-function dsChallengeManagerSO::accept(%this, %client, %id)
+function dsChallengeManagerSO::accept(%this, %client, %source)
 {
-	%challenge = %id < 0 ? 1 : 0;
+	%challenge = %source < 0 ? 1 : 0;
 
 	if (%challenge)
 	{
@@ -30,22 +30,22 @@ function dsChallengeManagerSO::accept(%this, %client, %id)
 			return 0;
 
 		%list = %client.challengeList;
-		%id = -1 * %id;
+		%source = ~%source;
 	}
 	else
 	{
 		%list = %this.boastList;
 	}
 
-	%rowIdx = %list.getRowNumById(%id);
+	%rowIdx = %list.getRowNumById(%source);
 	if (%rowIdx == -1)
 		return 0;
 
-	%source = %list.getRowId(%rowIdx);
+	%info = %list.getRowText(%rowIdx);
+
 	if (%source == %client)
 		return 0;
 
-	%info = %list.getRowText(%rowIdx);
 	%result = %this.startDuel(%source, %client, getField(%info, 2), getField(%info, 1), %challenge);
 
 	if (%result > 0)
@@ -54,6 +54,10 @@ function dsChallengeManagerSO::accept(%this, %client, %id)
 			%this.removeChallenge(%source, %client);
 		else
 			%this.removeBoast(%source);
+
+		%this.cancelChallengesTo(%client);
+		%this.cancelChallengesTo(%source);
+		%this.cancelChallengeFrom(%client);
 	}
 
 	return %result;
@@ -66,8 +70,9 @@ function dsChallengeManagerSO::addBoast(%this, %client, %weapon, %goal)
 	%client.challenging = 2;
 	%client.challengeInfo = %info;
 
-	%this.boastList.addRow(%client, %info);
-	%this.boastList.sort(0, 1);
+	%list = %this.boastList;
+	%list.addRow(%client, %info);
+	%list.sort(0, 1);
 
 	if (isObject(%client) && !%client.isAIControlled())
 		commandToClient(%client, 'dcSetChallenging', 1, %weapon.uiName, %goal, 0);
@@ -77,13 +82,17 @@ function dsChallengeManagerSO::addBoast(%this, %client, %weapon, %goal)
 
 function dsChallengeManagerSO::removeBoast(%this, %client)
 {
-	if (%this.boastList.getRowNumById(%client) == -1)
+	%list = %this.boastList;
+	%rowIdx = %list.getRowNumById(%client);
+
+	if (%rowIdx == -1)
 		return;
 
-	%this.boastList.removeRowById(%client);
+	%list.removeRow(%rowIdx);
 
 	if (isObject(%client) && !%client.isAIControlled())
 		commandToClient(%client, 'dcSetChallenging', 0);
+
 	commandToAllExcept(%client, 'dcRemoveChallenge', %client);
 
 	%client.challenging = "";
@@ -111,34 +120,49 @@ function dsChallengeManagerSO::broadcastPlayerUpdate(%this, %client, %status, %i
 
 function dsChallengeManagerSO::addChallenge(%this, %client, %target, %weapon, %goal)
 {
-	if (!isObject(%target.challengeList))
-		%target.challengeList = new GuiTextListCtrl();
+	%list = %target.challengeList;
 
+	if (!isObject(%list))
+	{
+		%list = new GuiTextListCtrl();
+		%target.challengeList = %list;
+	}
+
+	%count = %list.rowCount();
 	%info = %weapon.uiName TAB %goal TAB %weapon;
+
+	%list.addRow(%client, %info);
+	%list.sort(0, 1);
 
 	%client.challenging = 1;
 	%client.challengeInfo = %info;
 	%client.challengeTarget = %target;
 
-	%target.challengeList.addRow(%client, %info);
-	%target.challengeList.sort(0, 1);
-
 	if (isObject(%client) && !%client.isAIControlled())
 		commandToClient(%client, 'dcSetChallenging', 1, %weapon.uiName, %goal, 1, %target.name);
 
 	if (isObject(%target) && !%target.isAIControlled())
-		commandToClient(%target, 'dcSetChallenge', -1 * %client, %weapon.uiName, %goal, 1, %client.name);
+		commandToClient(%target, 'dcSetChallenge', ~%client, %weapon.uiName, %goal, 1, %client.name);
 }
 
 function dsChallengeManagerSO::removeChallenge(%this, %client, %target)
 {
-	if (!isObject(%target.challengeList) || %target.challengeList.getRowNumById(%client) == -1)
-		return;
+	%list = %target.challengeList;
 
-	%target.challengeList.removeRowById(%client);
+	if (isObject(%list))
+	{
+		%count = %list.rowCount();
+		%rowIdx = %list.getRowNumById(%client);
 
-	if (isObject(%target) && !%target.isAIControlled())
-		commandToClient(%target, 'dcRemoveChallenge', -1 * %client);
+		if (%rowIdx != -1)
+		{
+			%list.removeRow(%rowIdx);
+
+			if (isObject(%target) && !%target.isAIControlled())
+				commandToClient(%target, 'dcRemoveChallenge', ~%client);
+		}
+	}
+
 	if (isObject(%client) && !%client.isAIControlled())
 		commandToClient(%client, 'dcSetChallenging', 0);
 
@@ -147,10 +171,26 @@ function dsChallengeManagerSO::removeChallenge(%this, %client, %target)
 	%client.challengeTarget = "";
 }
 
-function dsChallengeManagerSO::cancelChallenge(%this, %client)
+function dsChallengeManagerSO::cancelChallengesTo(%this, %client)
+{
+	%list = %client.challengeList;
+	if (!isObject(%list))
+		return;
+
+	while (%count = %list.rowCount())
+	{
+		%source = %list.getRowId(%count - 1);
+		%this.removeChallenge(%source, %client);
+		messageClient(%source, '', "\c3" @ %client.name @ " \c2rejected your challenge!");
+	}
+}
+
+function dsChallengeManagerSO::cancelChallengeFrom(%this, %client)
 {
 	if (%client.challenging == 2)
+	{
 		%this.removeBoast(%client);
+	}
 	else if (%client.challenging == 1)
 	{
 		messageClient(%client.challengeTarget, '', "\c3" @ %client.name @ " \c2cancelled their challenge!");

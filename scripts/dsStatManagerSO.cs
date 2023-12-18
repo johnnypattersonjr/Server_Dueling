@@ -24,23 +24,29 @@ function dsStatManagerSO()
 function dsStatManagerSO::addDuel(%this, %weapon, %winnerRecord, %loserRecord)
 {
 	%itemName = %weapon.getName();
-
-	%winnerRecord.duels++;
-	%winnerRecord.duels[%itemName]++;
-	%winnerRecord.wins++;
-	%winnerRecord.wins[%itemName]++;
-	%winnerRecord.losses[%itemName] *= 1;
-	%loserRecord.duels++;
-	%loserRecord.duels[%itemName]++;
-	%loserRecord.losses++;
-	%loserRecord.losses[%itemName]++;
-	%loserRecord.wins[%itemName] *= 1;
-	%winnerRecord.dirty = 1;
-	%loserRecord.dirty = 1;
-
 	%list = %this.dirtyRecordList;
-	%list.setRowById(%winnerRecord, 1);
-	%list.setRowById(%loserRecord, 1);
+
+	if (%winnerRecord)
+	{
+		%winnerRecord.duels++;
+		%winnerRecord.duels[%itemName]++;
+		%winnerRecord.wins++;
+		%winnerRecord.wins[%itemName]++;
+		%winnerRecord.losses[%itemName] *= 1;
+		%winnerRecord.dirty = 1;
+		%list.setRowById(%winnerRecord, 1);
+	}
+
+	if (%loserRecord)
+	{
+		%loserRecord.duels++;
+		%loserRecord.duels[%itemName]++;
+		%loserRecord.losses++;
+		%loserRecord.losses[%itemName]++;
+		%loserRecord.wins[%itemName] *= 1;
+		%loserRecord.dirty = 1;
+		%list.setRowById(%loserRecord, 1);
+	}
 }
 
 function dsStatManagerSO::addRound(%this, %weapon, %winnerRecord, %loserRecord, %draw)
@@ -49,25 +55,42 @@ function dsStatManagerSO::addRound(%this, %weapon, %winnerRecord, %loserRecord, 
 
 	if (%draw)
 	{
-		%winnerRecord.deaths++;
-		%winnerRecord.deaths[%itemName]++;
-		%winnerRecord.kills[%itemName] *= 1;
-		%loserRecord.deaths++;
-		%loserRecord.deaths[%itemName]++;
-		%loserRecord.kills[%itemName] *= 1;
+		if (%winnerRecord)
+		{
+			%winnerRecord.deaths++;
+			%winnerRecord.deaths[%itemName]++;
+			%winnerRecord.kills[%itemName] *= 1;
+		}
+
+		if (%loserRecord)
+		{
+			%loserRecord.deaths++;
+			%loserRecord.deaths[%itemName]++;
+			%loserRecord.kills[%itemName] *= 1;
+		}
 	}
 	else
 	{
-		%winnerRecord.kills++;
-		%winnerRecord.kills[%itemName]++;
-		%winnerRecord.deaths[%itemName] *= 1;
-		%loserRecord.deaths++;
-		%loserRecord.deaths[%itemName]++;
-		%loserRecord.kills[%itemName] *= 1;
+		if (%winnerRecord)
+		{
+			%winnerRecord.kills++;
+			%winnerRecord.kills[%itemName]++;
+			%winnerRecord.deaths[%itemName] *= 1;
+		}
+
+		if (%loserRecord)
+		{
+			%loserRecord.deaths++;
+			%loserRecord.deaths[%itemName]++;
+			%loserRecord.kills[%itemName] *= 1;
+		}
 	}
 
-	%winnerRecord.dirty = 1;
-	%loserRecord.dirty = 1;
+	if (%winnerRecord)
+		%winnerRecord.dirty = 1;
+
+	if (%loserRecord)
+		%loserRecord.dirty = 1;
 }
 
 function dsStatManagerSO::dirtyCheck(%this)
@@ -92,7 +115,11 @@ function dsStatManagerSO::dirtyCheck(%this)
 
 function dsStatManagerSO::getRecordFromClient(%this, %client, %create)
 {
-	%record = "DuelingRecord_" @ %client.bl_id;
+	%bl_id = %client.bl_id;
+	if (%bl_id $= "")
+		return 0;
+
+	%record = "DuelingRecord_" @ %bl_id;
 
 	if (isObject(%record))
 	{
@@ -101,7 +128,7 @@ function dsStatManagerSO::getRecordFromClient(%this, %client, %create)
 	else
 	{
 		%group = %this.recordGroup;
-		%path = %this.recordDirectory @ %client.bl_id @ ".cs";
+		%path = %this.recordDirectory @ %bl_id @ ".cs";
 
 		%instantGroupBackup = $instantGroup;
 		$instantGroup = %group;
@@ -113,10 +140,10 @@ function dsStatManagerSO::getRecordFromClient(%this, %client, %create)
 		}
 		else if (%create)
 		{
-			%record = new ScriptObject(DuelingRecord_ @ %client.bl_id)
+			%record = new ScriptObject(DuelingRecord_ @ %bl_id)
 			{
 				class = dsStatRecord;
-				bl_id = %client.bl_id;
+				bl_id = %bl_id;
 				name = %client.name;
 				deaths = 0;
 				duels = 0;
@@ -238,10 +265,13 @@ function serverCmdUpdateBodyParts(%client, %arg1, %arg2, %arg3, %arg4, %arg5, %a
 	if (%client.avatarSaved)
 		return;
 
-	%record = dsStatManagerSO.getRecordFromClient(%client, 1);
-	%record.snapshotAvatar(%client);
+	if (isObject(%record = dsStatManagerSO.getRecordFromClient(%client, 1)))
+	{
+		%record.snapshotAvatar(%client);
+		%client.statRecord = %record;
+	}
+
 	%client.avatarSaved = 1;
-	%client.statRecord = %record;
 }
 
 }; // package Server_Dueling

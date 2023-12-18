@@ -5,6 +5,7 @@ exec("./scripts/minimalDefaultContent.cs");
 
 exec("./scripts/dsChallengeManagerSO.cs");
 exec("./scripts/dsColorSetManagerSO.cs");
+exec("./scripts/dsFrameQueueSO.cs");
 exec("./scripts/dsMapManagerSO.cs");
 exec("./scripts/dsStatManagerSO.cs");
 exec("./scripts/dsWeaponManagerSO.cs");
@@ -16,8 +17,8 @@ package Server_Dueling {
 
 function MiniGameSO::commandToAll(%this, %cmd, %arg1, %arg2, %arg3, %arg4, %arg5, %arg6, %arg7, %arg8, %arg9, %arg10)
 {
-	%count = %this.numMembers;
-	for (%i = 0; %i < %count; %i++)
+	%numMembers = %this.numMembers;
+	for (%i = 0; %i < %numMembers; %i++)
 	{
 		%obj = %this.member[%i];
 		if (%obj.isAIControlled())
@@ -29,8 +30,8 @@ function MiniGameSO::commandToAll(%this, %cmd, %arg1, %arg2, %arg3, %arg4, %arg5
 
 function MiniGameSO::commandToAllExcept(%this, %client, %cmd, %arg1, %arg2, %arg3, %arg4, %arg5, %arg6, %arg7, %arg8, %arg9, %arg10)
 {
-	%count = %this.numMembers;
-	for (%i = 0; %i < %count; %i++)
+	%numMembers = %this.numMembers;
+	for (%i = 0; %i < %numMembers; %i++)
 	{
 		%obj = %this.member[%i];
 		if (%obj.isAIControlled() || %obj == %client)
@@ -85,6 +86,7 @@ function dsStartGame()
 {
 	stopRaytracer();
 
+	dsFrameQueueSO();
 	dsColorSetManagerSO().makeSprayCanGeneric();
 
 	%boundarySize = 64;
@@ -120,14 +122,18 @@ function startGame()
 function detectHang(%a)
 {
 	cancel($detectHangEvent);
+
 	if (!%a)
+	{
+		$detectHangLastRealTime = "";
 		return;
+	}
 
 	%realTime = getRealTime();
 
 	if ($detectHangLastRealTime !$= "")
 	{
-		%threshold = 3 * 1000 / 32;
+		%threshold = 5 * 1000 / 32;
 
 		%deltaRealTime = %realTime - $detectHangLastRealTime;
 		if (%deltaRealTime > %threshold)
@@ -139,8 +145,7 @@ function detectHang(%a)
 	}
 
 	$detectHangLastRealTime = %realTime;
-
-	$detectHangEvent = schedule(0, 0, detectHang, %a);
+	$detectHangEvent = schedule(1, 0, detectHang, %a);
 }
 
 function serverCmdDetectHangs(%client, %a)
